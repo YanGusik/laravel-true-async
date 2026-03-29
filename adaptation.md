@@ -114,17 +114,22 @@
 
 309 находок в `vendor/laravel/framework`. Полная классификация:
 
-### Реальные баги — mutable static, пишется в runtime per-request
+### Доказанные баги — подтверждены тестами (`tests/StaticStateBugsTest.php`)
 
-| Класс | Свойство | Проблема | Нужна адаптация? |
+| Класс | Свойство | Проблема | Адаптация |
 |---|---|---|---|
-| **`Relation`** | `$constraints` | `noConstraints()` ставит `false` → `finally` возвращает. Гонка: корутина A ставит false, корутина B читает false | **Да** — гонка при eager loading |
-| **`Relation`** | `$selfJoinCount` | Инкрементируется при self-join. Shared counter → дубликат алиасов маловероятен, но counter не сбрасывается | Нет — counter монотонный, алиасы уникальны |
-| **`Number`** | `$locale`, `$currency` | `Number::useLocale()` / `withLocale()` меняют глобально. Мультиязычный сайт: запрос A ставит `ru`, B ставит `en`, A рендерит цены в `en` | **Да** — если используется `Number::useLocale()` |
-| **`Once`** | `$instance` (WeakMap) | `once()` кэширует результат в shared WeakMap. Корутина A кэширует значение, B получает его вместо своего | **Да** — если `once()` используется с per-request данными |
-| **`BladeCompiler`** | `$componentHashStack` | Stack `push`/`pop` при рендере `<x-component>`. Параллельный рендер → чужой hash в стеке | **Да** — при параллельном Blade рендере |
-| **`ManagesLayouts`** | `$parentPlaceholder` | Кэш placeholder-ов для `@section`/`@yield`. Детерминированный (hash от имени секции) — **безопасен** | Нет — одинаковый результат для всех |
-| **`View\Component`** | `$factory` | `Container::getInstance()->make('view')` — кэшируется в static. Одна фабрика для всех | Нет — `AsyncViewFactory` уже корутинно-безопасна |
+| **`Relation`** | `$constraints` | `noConstraints()` ставит `false` глобально → корутина B читает false при eager load чужого запроса | **Нужна** — гонка при eager loading |
+| **`Number`** | `$locale`, `$currency` | `Number::useLocale('de')` → корутина B ставит `'fr'` → A рендерит цены во `'fr'` | **Нужна** — если приложение мультиязычное |
+| **`Once`** | `$instance` (WeakMap) | `once()` на singleton-сервисе кэширует результат → B получает значение A | **Нужна** — если `once()` используется с per-request данными |
+
+### Не баги — ошибочно помечены ранее
+
+| Класс | Свойство | Почему безопасно |
+|---|---|---|
+| `BladeCompiler` | `$componentHashStack` | Используется только при **компиляции** шаблонов, не рендере. Шаблоны кэшируются после первого запроса |
+| `ManagesLayouts` | `$parentPlaceholder` | Детерминированный кэш (hash от имени секции) — одинаковый результат для всех |
+| `View\Component` | `$factory` | `Container::getInstance()->make('view')` — `AsyncViewFactory` уже корутинно-безопасна |
+| `Relation` | `$selfJoinCount` | Монотонный counter для уникальных алиасов — race не вызывает дубликатов |
 
 ### Безопасные — resolvers через `$app['request']` (уже scoped)
 
