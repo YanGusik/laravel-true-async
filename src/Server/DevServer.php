@@ -37,6 +37,10 @@ class DevServer implements ServerInterface
         }
 
         $this->configureDatabasePool();
+
+        if (($view = $this->app->make('view')) instanceof \Spawn\Laravel\View\AsyncViewFactory) {
+            $view->bootCompleted();
+        }
     }
 
     public function start(): void
