@@ -25,6 +25,7 @@ class AsyncServiceProvider extends ServiceProvider
         ], 'async-config');
 
         $this->registerPermissionAdapter();
+        $this->registerInertiaAdapter();
     }
 
     private function registerPermissionAdapter(): void
@@ -33,11 +34,21 @@ class AsyncServiceProvider extends ServiceProvider
             return;
         }
 
-        // Override spatie's singleton with our coroutine-safe version.
-        // Must run after spatie's PermissionServiceProvider::packageBooted().
         $this->app->singleton(
             \Spatie\Permission\PermissionRegistrar::class,
             \Spawn\Laravel\Permission\AsyncPermissionRegistrar::class,
+        );
+    }
+
+    private function registerInertiaAdapter(): void
+    {
+        if (! class_exists(\Inertia\ResponseFactory::class)) {
+            return;
+        }
+
+        $this->app->singleton(
+            \Inertia\ResponseFactory::class,
+            \Spawn\Laravel\Inertia\AsyncResponseFactory::class,
         );
     }
 }

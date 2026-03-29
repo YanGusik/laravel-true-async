@@ -71,7 +71,8 @@
 - [ ] **Документация**: описать unsafe-паттерны для пользователей (static state, `Event::defer()`, singleton с mutable state)
 - [x] **Линтер**: PHPStan-правило `MutableStaticPropertyRule` — обнаружение mutable static properties (`src/PHPStan/`)
 - [x] **Адаптеры для сторонних пакетов**: spatie/laravel-permission (`AsyncPermissionRegistrar`)
-- [ ] **Адаптеры для сторонних пакетов**: inertia, socialite, livewire
+- [x] **Адаптеры для сторонних пакетов**: inertia (`AsyncResponseFactory`)
+- [ ] **Адаптеры для сторонних пакетов**: socialite, livewire
 
 ---
 
@@ -92,7 +93,7 @@
 |---|---|---|---|
 | **spatie/laravel-permission** | ~30M | ✅ `AsyncPermissionRegistrar` — team ID и wildcard index в `current_context()`, `clearPermissionsCollection()` no-op в async mode | `src/Permission/AsyncPermissionRegistrar.php` |
 | **livewire/livewire** | ~25M | `LivewireManager` — singleton с per-request state. Множество Octane-багов: asset injection, data hydration, `wire:stream`. Сильно завязан на традиционный request lifecycle | Глубокая адаптация или замена на Inertia в async-режиме |
-| **inertiajs/inertia-laravel** | ~12M | `Inertia::share()` — аналог `View::share()`, данные (`auth.user`, flash messages) в singleton factory. `HandleInertiaRequests` middleware вызывает на каждый запрос | Тот же подход что `AsyncViewFactory` — `share()` в `current_context()` после `bootCompleted()` |
+| **inertiajs/inertia-laravel** | ~12M | ✅ `AsyncResponseFactory` — sharedProps, rootView, version, encryptHistory, urlResolver в `current_context()` | `src/Inertia/AsyncResponseFactory.php` |
 | **laravel/socialite** | ~15M | `SocialiteManager` кэширует driver-ы в `$drivers[]` со stale конфигом от предыдущего запроса | Flush `$drivers` per-request или скоупить manager |
 
 ### Безопасны — уже покрыты существующим скоупингом или stateless

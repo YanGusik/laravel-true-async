@@ -41,6 +41,13 @@ class FrankenPhpServer implements ServerInterface
                 $registrar->bootCompleted();
             }
         }
+
+        if ($this->app->bound(\Inertia\ResponseFactory::class)) {
+            $inertia = $this->app->make(\Inertia\ResponseFactory::class);
+            if ($inertia instanceof \Spawn\Laravel\Inertia\AsyncResponseFactory) {
+                $inertia->bootCompleted();
+            }
+        }
     }
 
     public function start(): void
