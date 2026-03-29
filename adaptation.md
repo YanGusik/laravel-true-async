@@ -69,7 +69,7 @@
 
 ## TODO
 
-- [ ] **Документация**: описать unsafe-паттерны для пользователей (static state, `Event::defer()`, singleton с mutable state)
+- [x] **Документация**: unsafe-паттерны, safe patterns, адаптация пакетов — см. `ASYNC_ADAPTATION.md`
 - [x] **Линтер**: PHPStan-правило `MutableStaticPropertyRule` — обнаружение mutable static properties (`src/PHPStan/`)
 - [x] **Адаптеры для сторонних пакетов**: spatie/laravel-permission (`AsyncPermissionRegistrar`)
 - [x] **Адаптеры для сторонних пакетов**: inertia (`AsyncResponseFactory`)
