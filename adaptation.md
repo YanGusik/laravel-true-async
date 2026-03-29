@@ -116,6 +116,41 @@
 
 ---
 
+## Сторонние пакеты
+
+Популярные third-party пакеты, отсортированные по степени риска.
+
+### Несовместимы — отключать в async-режиме
+
+| Пакет | Установок/мес | Проблема |
+|---|---|---|
+| **barryvdh/laravel-debugbar** | ~25M | Singleton-коллекторы (QueryCollector, RouteCollector) копят per-request данные. Memory leak. Данные одного запроса видны в другом |
+| **laravel/telescope** | ~7M | Аналогично — `IncomingEntry` объекты копятся в памяти. `Telescope::$shouldRecord` — static флаг, влияет на все корутины |
+
+### Требуют скоупинга — тот же паттерн что View::share()
+
+| Пакет | Установок/мес | Проблема | Решение |
+|---|---|---|---|
+| **spatie/laravel-permission** | ~30M | `PermissionRegistrar` — singleton, кэширует все permissions/roles в `$permissions`. Утечка между запросами. `register_octane_reset_listener` сбрасывает глобально, не per-coroutine | Скоупить `PermissionRegistrar` через `scopedSingleton()` или хранить кэш в `current_context()` |
+| **livewire/livewire** | ~25M | `LivewireManager` — singleton с per-request state. Множество Octane-багов: asset injection, data hydration, `wire:stream`. Сильно завязан на традиционный request lifecycle | Глубокая адаптация или замена на Inertia в async-режиме |
+| **inertiajs/inertia-laravel** | ~12M | `Inertia::share()` — аналог `View::share()`, данные (`auth.user`, flash messages) в singleton factory. `HandleInertiaRequests` middleware вызывает на каждый запрос | Тот же подход что `AsyncViewFactory` — `share()` в `current_context()` после `bootCompleted()` |
+| **laravel/socialite** | ~15M | `SocialiteManager` кэширует driver-ы в `$drivers[]` со stale конфигом от предыдущего запроса | Flush `$drivers` per-request или скоупить manager |
+
+### Безопасны — уже покрыты существующим скоупингом или stateless
+
+| Пакет | Установок/мес | Почему безопасен |
+|---|---|---|
+| **laravel/sanctum** | ~40M | Использует auth guards (уже scoped). `$personalAccessTokenModel` — static, read-only |
+| **laravel/passport** | ~15M | Auth guards scoped. Static свойства — boot-time конфигурация |
+| **laravel/scout** | ~8M | `EngineManager` кэширует engines (Algolia, Meilisearch) — stateless HTTP-клиенты |
+| **laravel/cashier-stripe** | ~7M | Stateless вызовы Stripe API через Eloquent-модели |
+| **spatie/laravel-medialibrary** | ~10M | Model-based, конверсии через queue. Нет singleton state |
+| **spatie/laravel-activitylog** | ~8M | Trait-based логирование. Static конфигурация read-only. Ручной `activity()` API — создаёт новый logger |
+| **laravel/horizon** | ~10M | Отдельный процесс (`horizon:work`). Dashboard — stateless чтение из Redis |
+| **laravel/breeze** | ~8M | Scaffolding, не runtime. Риск от Livewire/Inertia под капотом |
+
+---
+
 ## Архитектурные заметки
 
 ### Почему `db` нельзя скоупить
