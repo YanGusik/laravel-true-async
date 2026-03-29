@@ -72,7 +72,9 @@
 - [x] **Линтер**: PHPStan-правило `MutableStaticPropertyRule` — обнаружение mutable static properties (`src/PHPStan/`)
 - [x] **Адаптеры для сторонних пакетов**: spatie/laravel-permission (`AsyncPermissionRegistrar`)
 - [x] **Адаптеры для сторонних пакетов**: inertia (`AsyncResponseFactory`)
-- [ ] **Адаптеры для сторонних пакетов**: socialite, livewire
+- [ ] **Адаптеры для сторонних пакетов**: socialite
+- [ ] **Проверить**: `Translator::setLocale()` — стандартный per-request паттерн (middleware `SetLocale`), возможно нужен адаптер
+- [ ] **Проверить**: `terminatingCallbacks[]` memory leak (ViewServiceProvider, octane#887)
 
 ---
 
@@ -92,7 +94,7 @@
 | Пакет | Установок/мес | Проблема | Решение |
 |---|---|---|---|
 | **spatie/laravel-permission** | ~30M | ✅ `AsyncPermissionRegistrar` — team ID и wildcard index в `current_context()`, `clearPermissionsCollection()` no-op в async mode | `src/Permission/AsyncPermissionRegistrar.php` |
-| **livewire/livewire** | ~25M | `LivewireManager` — singleton с per-request state. Множество Octane-багов: asset injection, data hydration, `wire:stream`. Сильно завязан на традиционный request lifecycle | Глубокая адаптация или замена на Inertia в async-режиме |
+| **livewire/livewire** | ~25M | Не поддерживается в async-режиме. `LivewireManager` — singleton с per-request state. Memory leak ([livewire#10009](https://github.com/livewire/livewire/discussions/10009)), `wire:stream` сломан ([octane#1022](https://github.com/laravel/octane/issues/1022)). Filament (Livewire-based) аналогично ([filament#19148](https://github.com/filamentphp/filament/issues/19148)) | Использовать Inertia |
 | **inertiajs/inertia-laravel** | ~12M | ✅ `AsyncResponseFactory` — sharedProps, rootView, version, encryptHistory, urlResolver в `current_context()` | `src/Inertia/AsyncResponseFactory.php` |
 | **laravel/socialite** | ~15M | `SocialiteManager` кэширует driver-ы в `$drivers[]` со stale конфигом от предыдущего запроса | Flush `$drivers` per-request или скоупить manager |
 
@@ -108,6 +110,36 @@
 | **spatie/laravel-activitylog** | ~8M | Trait-based логирование. Static конфигурация read-only. Ручной `activity()` API — создаёт новый logger |
 | **laravel/horizon** | ~10M | Отдельный процесс (`horizon:work`). Dashboard — stateless чтение из Redis |
 | **laravel/breeze** | ~8M | Scaffolding, не runtime. Риск от Livewire/Inertia под капотом |
+
+---
+
+## Известные проблемы Octane (ресерч)
+
+Источники: [octane best practices](https://github.com/michael-rubel/laravel-octane-best-practices), [Hypervel porting guide](https://hypervel.org/docs/packages-porting), GitHub issues.
+
+### Требуют проверки в spawn
+
+| Проблема | Источник | Статус |
+|---|---|---|
+| `Translator::setLocale()` per-request | [Hypervel docs](https://hypervel.org/docs/packages-porting) — `SessionGuard::$user`, `Translator::$locale` | Проверить — стандартный паттерн `SetLocale` middleware |
+| `terminatingCallbacks[]` memory leak | [octane#887](https://github.com/laravel/octane/issues/887) — ViewServiceProvider добавляет callback при каждом резолве BladeCompiler | Проверить — потенциальный memory leak |
+
+### Уже решено в spawn
+
+| Проблема | Источник | Наше решение |
+|---|---|---|
+| `SessionGuard::$user` state leak | [Hypervel docs](https://hypervel.org/docs/packages-porting) | `ScopedService::AUTH` |
+| `Facade::$resolvedInstance` shared cache | Octane docs | `ScopedServiceProxy` |
+| `View::share()` data leak | Octane docs | `AsyncViewFactory` |
+| `config()->set()` per-request | Octane docs | Config immutable в нашей модели |
+
+### Не наша проблема
+
+| Проблема | Почему |
+|---|---|
+| `$app->singleton(Service, fn($app) => new Service($app))` — stale container | Larastan [`OctaneCompatibilityRule`](https://github.com/larastan/larastan) ловит это. User-space ошибка, не фреймворк |
+| Database connection leak | Наш PDO Pool на уровне C изолирует соединения |
+| Swoole-специфичные баги (file hooks, server freeze) | Мы используем TrueAsync, не Swoole |
 
 ---
 
