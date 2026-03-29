@@ -17,9 +17,9 @@ class AsyncApplication extends Application
      * 'cookie' is excluded: AuthManager passes $app['cookie'] to setCookieJar(QueueingFactory).
      * 'auth.driver' is excluded: guards are passed to typed parameters in some middleware.
      */
-    private const FACADE_PROXIED = [
-        'auth',
-        'session',
+    private const FACADE_PROXIED_MAP = [
+        'auth'    => true,
+        'session' => true,
     ];
 
     /**
@@ -32,9 +32,20 @@ class AsyncApplication extends Application
      */
     private array $scopedBindings = [];
 
+    /**
+     * Cached config('async.scoped_services') as alias => true hash map.
+     * Populated once in enableAsyncMode() to avoid per-resolve config lookups.
+     */
+    private array $scopedServiceCache = [];
+
     public function enableAsyncMode(): void
     {
         $this->asyncMode = true;
+
+        if ($this->resolved('config')) {
+            $scoped = $this->make('config')->get('async.scoped_services', []);
+            $this->scopedServiceCache = array_flip($scoped);
+        }
     }
 
     public function scopedSingleton(string $abstract, Closure $factory): void
@@ -47,8 +58,8 @@ class AsyncApplication extends Application
         if ($this->asyncMode) {
             $alias = $this->getAlias($key);
 
-            if (in_array($alias, self::FACADE_PROXIED, true)) {
-                return new ScopedServiceProxy(fn() => $this->resolveScoped($alias));
+            if (isset(self::FACADE_PROXIED_MAP[$alias])) {
+                return new ScopedServiceProxy(fn() => $this->tryResolveScoped($alias));
             }
         }
 
@@ -57,43 +68,34 @@ class AsyncApplication extends Application
 
     protected function resolve($abstract, $parameters = [], $raiseEvents = true)
     {
-        if (!$this->asyncMode) {
-            return parent::resolve($abstract, $parameters, $raiseEvents);
-        }
+        if ($this->asyncMode) {
+            $alias = $this->getAlias($abstract);
+            $instance = $this->tryResolveScoped($alias);
 
-        $alias = $this->getAlias($abstract);
-
-        if ($this->isScopedService($alias)) {
-            return $this->resolveScoped($alias);
+            if ($instance !== null) {
+                return $instance;
+            }
         }
 
         return parent::resolve($abstract, $parameters, $raiseEvents);
     }
 
-    private function isScopedService(string $alias): bool
+    /**
+     * Resolve a scoped service from the current context, or return null
+     * if the alias is not a scoped service.
+     */
+    private function tryResolveScoped(string $alias): mixed
     {
-        if (ScopedService::tryFrom($alias) !== null) {
-            return true;
+        $key = ScopedService::tryFrom($alias);
+
+        if ($key === null && !isset($this->scopedBindings[$alias]) && !isset($this->scopedServiceCache[$alias])) {
+            return null;
         }
 
-        if (isset($this->scopedBindings[$alias])) {
-            return true;
-        }
-
-        if ($this->resolved('config')) {
-            $scoped = parent::resolve('config')->get('async.scoped_services', []);
-            return in_array($alias, $scoped, true);
-        }
-
-        return false;
-    }
-
-    private function resolveScoped(string $alias): mixed
-    {
         $ctx = current_context();
-        $key = ScopedService::tryFrom($alias) ?? $alias;
+        $ctxKey = $key ?? $alias;
 
-        $instance = $ctx->find($key);
+        $instance = $ctx->find($ctxKey);
 
         if ($instance !== null) {
             return $instance;
@@ -111,7 +113,7 @@ class AsyncApplication extends Application
             }
         }
 
-        $ctx->set($key, $instance);
+        $ctx->set($ctxKey, $instance);
 
         return $instance;
     }
