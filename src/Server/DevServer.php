@@ -42,11 +42,13 @@ class DevServer implements ServerInterface
     public function start(): void
     {
         $shutdownState = new FutureState();
-        $shutdownFuture = new Future($shutdownState);
+        $shutdownFuture = (new Future($shutdownState))->ignore();
 
-        pcntl_async_signals(true);
-        pcntl_signal(SIGTERM, fn() => $shutdownState->complete(null));
-        pcntl_signal(SIGINT, fn() => $shutdownState->complete(null));
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+            pcntl_signal(SIGTERM, fn() => $shutdownState->complete(null));
+            pcntl_signal(SIGINT, fn() => $shutdownState->complete(null));
+        }
 
         $this->serverScope = new Scope();
         $serverScope = $this->serverScope;
@@ -67,7 +69,7 @@ class DevServer implements ServerInterface
             echo "Listening on tcp://{$this->host}:{$this->port}\n";
 
             while (true) {
-                $client = stream_socket_accept($socket, timeout: -1);
+                $client = @stream_socket_accept($socket, timeout: -1);
 
                 if ($client === false) {
                     continue;
