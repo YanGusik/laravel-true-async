@@ -10,7 +10,7 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 use Spawn\Laravel\Contracts\ServerInterface;
-use Spawn\Laravel\Foundation\ContextKeys;
+use Spawn\Laravel\Foundation\ScopedService;
 use Spawn\Laravel\Server\Concerns\ManagesDatabasePool;
 
 use function Async\current_context;
@@ -54,7 +54,7 @@ class FrankenPhpServer implements ServerInterface
             try {
                 $request = $this->buildRequest($frankenRequest);
 
-                current_context()->set(ContextKeys::$request, $request);
+                current_context()->set(ScopedService::REQUEST, $request);
 
                 $kernel = $this->app->make(Kernel::class);
                 $laravelResponse = $kernel->handle($request);

@@ -3,7 +3,7 @@
 namespace Spawn\Laravel\Tests;
 
 use Illuminate\Http\Request;
-use Spawn\Laravel\Foundation\ContextKeys;
+use Spawn\Laravel\Foundation\ScopedService;
 
 use function Async\current_context;
 use function Async\delay;
@@ -17,19 +17,19 @@ class RequestIsolationTest extends AsyncTestCase
         $results = $this->runParallel([
             'user1' => function () use ($app) {
                 $request = Request::create('/test?user=1');
-                current_context()->set(ContextKeys::$request, $request);
+                current_context()->set(ScopedService::REQUEST, $request);
                 delay(200);
                 return $app->make('request')->query('user');
             },
             'user2' => function () use ($app) {
                 $request = Request::create('/test?user=2');
-                current_context()->set(ContextKeys::$request, $request);
+                current_context()->set(ScopedService::REQUEST, $request);
                 delay(200);
                 return $app->make('request')->query('user');
             },
             'user3' => function () use ($app) {
                 $request = Request::create('/test?user=3');
-                current_context()->set(ContextKeys::$request, $request);
+                current_context()->set(ScopedService::REQUEST, $request);
                 delay(200);
                 return $app->make('request')->query('user');
             },
@@ -47,7 +47,7 @@ class RequestIsolationTest extends AsyncTestCase
         $results = $this->runParallel([
             'parent' => function () use ($app) {
                 $request = Request::create('/test?user=parent');
-                current_context()->set(ContextKeys::$request, $request);
+                current_context()->set(ScopedService::REQUEST, $request);
 
                 // Spawn a child coroutine — it should see the request
                 // via hierarchical find() on the scope context.

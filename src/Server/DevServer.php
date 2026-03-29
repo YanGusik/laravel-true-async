@@ -8,7 +8,7 @@ use Async\Scope;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
 use Spawn\Laravel\Contracts\ServerInterface;
-use Spawn\Laravel\Foundation\ContextKeys;
+use Spawn\Laravel\Foundation\ScopedService;
 use Spawn\Laravel\Server\Concerns\ManagesDatabasePool;
 
 use function Async\current_context;
@@ -105,7 +105,7 @@ class DevServer implements ServerInterface
 
             $request = RequestParser::parse($raw);
 
-            current_context()->set(ContextKeys::$request, $request);
+            current_context()->set(ScopedService::REQUEST, $request);
 
             $kernel = $this->app->make(Kernel::class);
             $response = $kernel->handle($request);

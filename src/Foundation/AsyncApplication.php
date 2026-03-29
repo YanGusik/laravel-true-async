@@ -10,23 +10,6 @@ use function Async\current_context;
 class AsyncApplication extends Application
 {
     /**
-     * Laravel services that are always request-scoped.
-     */
-    private const LARAVEL_SCOPED = [
-        'session',
-        'auth',
-        'auth.driver',
-        'cookie',
-        // NOTE: 'db' cannot be scoped here because DatabaseServiceProvider::boot() sets
-        // Model::setConnectionResolver($app['db']) as a static property. A scoped DatabaseManager
-        // tied to a specific coroutine context gets GC'd after the coroutine finishes, leaving
-        // Model::$resolver pointing to a destroyed object → segfault.
-        // Physical connection isolation is handled by PDO Pool at the C level instead.
-        // Known limitation: Connection::$transactions counter is shared across coroutines.
-        // Workaround: use db.transaction() which goes through DatabaseTransactionsManager.
-    ];
-
-    /**
      * Scoped services that are safe to proxy via offsetGet (used by Facades).
      * Services that get passed to typed PHP parameters must NOT be here,
      * because ScopedServiceProxy does not extend/implement their types.
@@ -49,13 +32,9 @@ class AsyncApplication extends Application
      */
     private array $scopedBindings = [];
 
-    /**
-     * Register a scoped singleton — one instance per coroutine context.
-     */
     public function enableAsyncMode(): void
     {
         $this->asyncMode = true;
-        ContextKeys::init();
     }
 
     public function scopedSingleton(string $abstract, Closure $factory): void
@@ -84,15 +63,6 @@ class AsyncApplication extends Application
 
         $alias = $this->getAlias($abstract);
 
-        // Request is always resolved from scope context
-        if ($alias === 'request') {
-            $request = current_context()->find(ContextKeys::$request);
-
-            if ($request !== null) {
-                return $request;
-            }
-        }
-
         if ($this->isScopedService($alias)) {
             return $this->resolveScoped($alias);
         }
@@ -102,7 +72,7 @@ class AsyncApplication extends Application
 
     private function isScopedService(string $alias): bool
     {
-        if (in_array($alias, self::LARAVEL_SCOPED, true)) {
+        if (ScopedService::tryFrom($alias) !== null) {
             return true;
         }
 
@@ -121,15 +91,12 @@ class AsyncApplication extends Application
     private function resolveScoped(string $alias): mixed
     {
         $ctx = current_context();
-        $bag = $ctx->find(ContextKeys::$scopedServices);
+        $key = ScopedService::tryFrom($alias) ?? $alias;
 
-        if ($bag === null) {
-            $bag = new \stdClass();
-            $ctx->set(ContextKeys::$scopedServices, $bag);
-        }
+        $instance = $ctx->find($key);
 
-        if (isset($bag->$alias)) {
-            return $bag->$alias;
+        if ($instance !== null) {
+            return $instance;
         }
 
         if (isset($this->scopedBindings[$alias])) {
@@ -144,7 +111,7 @@ class AsyncApplication extends Application
             }
         }
 
-        $bag->$alias = $instance;
+        $ctx->set($key, $instance);
 
         return $instance;
     }
