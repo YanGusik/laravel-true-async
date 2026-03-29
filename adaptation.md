@@ -69,8 +69,9 @@
 ## TODO
 
 - [ ] **Документация**: описать unsafe-паттерны для пользователей (static state, `Event::defer()`, singleton с mutable state)
-- [ ] **Линтер**: PHPStan-правило для обнаружения static mutable state в request-контексте
-- [ ] **Адаптеры для сторонних пакетов**: отдельный репозиторий (spatie/permission, inertia, socialite)
+- [x] **Линтер**: PHPStan-правило `MutableStaticPropertyRule` — обнаружение mutable static properties (`src/PHPStan/`)
+- [x] **Адаптеры для сторонних пакетов**: spatie/laravel-permission (`AsyncPermissionRegistrar`)
+- [ ] **Адаптеры для сторонних пакетов**: inertia, socialite, livewire
 
 ---
 
@@ -89,7 +90,7 @@
 
 | Пакет | Установок/мес | Проблема | Решение |
 |---|---|---|---|
-| **spatie/laravel-permission** | ~30M | `PermissionRegistrar` — singleton, кэширует все permissions/roles в `$permissions`. Утечка между запросами. `register_octane_reset_listener` сбрасывает глобально, не per-coroutine | Скоупить `PermissionRegistrar` через `scopedSingleton()` или хранить кэш в `current_context()` |
+| **spatie/laravel-permission** | ~30M | ✅ `AsyncPermissionRegistrar` — team ID и wildcard index в `current_context()`, `clearPermissionsCollection()` no-op в async mode | `src/Permission/AsyncPermissionRegistrar.php` |
 | **livewire/livewire** | ~25M | `LivewireManager` — singleton с per-request state. Множество Octane-багов: asset injection, data hydration, `wire:stream`. Сильно завязан на традиционный request lifecycle | Глубокая адаптация или замена на Inertia в async-режиме |
 | **inertiajs/inertia-laravel** | ~12M | `Inertia::share()` — аналог `View::share()`, данные (`auth.user`, flash messages) в singleton factory. `HandleInertiaRequests` middleware вызывает на каждый запрос | Тот же подход что `AsyncViewFactory` — `share()` в `current_context()` после `bootCompleted()` |
 | **laravel/socialite** | ~15M | `SocialiteManager` кэширует driver-ы в `$drivers[]` со stale конфигом от предыдущего запроса | Flush `$drivers` per-request или скоупить manager |
@@ -106,6 +107,39 @@
 | **spatie/laravel-activitylog** | ~8M | Trait-based логирование. Static конфигурация read-only. Ручной `activity()` API — создаёт новый logger |
 | **laravel/horizon** | ~10M | Отдельный процесс (`horizon:work`). Dashboard — stateless чтение из Redis |
 | **laravel/breeze** | ~8M | Scaffolding, не runtime. Риск от Livewire/Inertia под капотом |
+
+---
+
+## Результаты автоматического сканирования (PHPStan MutableStaticPropertyRule)
+
+309 находок в `vendor/laravel/framework`. Классификация:
+
+### Требуют адаптации — per-request state в static resolvers
+
+| Класс | Свойство | Проблема |
+|---|---|---|
+| **`AbstractPaginator`** | `$currentPageResolver` | Замыкание захватывает `$request` — корутина A видит page= корутины B |
+| **`AbstractPaginator`** | `$currentPathResolver` | Path от чужого запроса |
+| **`AbstractPaginator`** | `$queryStringResolver` | Query string от чужого запроса |
+| **`AbstractCursorPaginator`** | `$currentCursorResolver` | Cursor от чужого запроса |
+| **`ManagesLayouts`** | `$parentPlaceholder` | Параллельный рендеринг Blade `@section`/`@yield` — маловероятно, но возможно |
+
+### Требуют внимания — опасны в специфичных сценариях
+
+| Класс | Свойство | Сценарий |
+|---|---|---|
+| `Model` | `$unguarded` | `Model::unguard()` в seeders — глобальный флаг. Опасен если seeder параллельно с запросами |
+| `Model` | `$recursionCache` | Static WeakMap, потенциальный cross-coroutine leak |
+
+### Безопасные — boot-time конфиг (read-only в runtime)
+
+76× `$macros` (Macroable trait), `Model::$resolver`, `$dispatcher`, `$booted`, `$bootedCallbacks`,
+`$traitInitializers`, `$globalScopes`, `$mutatorCache`, `$attributeMutatorCache`, `$castTypeCache`,
+`$classAttributes`, `$snakeAttributes`, `$primitiveCastTypes`, `$collectionClass`,
+`$modelsShouldPreventLazyLoading` и подобные стратегии, `Facade::$app`/`$resolvedInstance`/`$cached` (решено через `ScopedServiceProxy`),
+`Router::$verbs`, `Route::$validators`, `Encrypter::$supportedCiphers`, `Connection::$resolvers`,
+`Cookie/Middleware::$neverEncrypt`/`$serialize`, `Queue::$createPayloadCallbacks`,
+`$redirectToCallback` (Auth middleware — ставится в `bootstrap/app.php`).
 
 ---
 

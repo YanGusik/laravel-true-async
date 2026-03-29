@@ -34,6 +34,13 @@ class FrankenPhpServer implements ServerInterface
         if (($view = $this->app->make('view')) instanceof \Spawn\Laravel\View\AsyncViewFactory) {
             $view->bootCompleted();
         }
+
+        if ($this->app->bound(\Spatie\Permission\PermissionRegistrar::class)) {
+            $registrar = $this->app->make(\Spatie\Permission\PermissionRegistrar::class);
+            if ($registrar instanceof \Spawn\Laravel\Permission\AsyncPermissionRegistrar) {
+                $registrar->bootCompleted();
+            }
+        }
     }
 
     public function start(): void
