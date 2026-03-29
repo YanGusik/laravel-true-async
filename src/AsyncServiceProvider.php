@@ -26,6 +26,7 @@ class AsyncServiceProvider extends ServiceProvider
 
         $this->registerPermissionAdapter();
         $this->registerInertiaAdapter();
+        $this->registerTranslatorAdapter();
     }
 
     private function registerPermissionAdapter(): void
@@ -50,5 +51,18 @@ class AsyncServiceProvider extends ServiceProvider
             \Inertia\ResponseFactory::class,
             \Spawn\Laravel\Inertia\AsyncResponseFactory::class,
         );
+    }
+
+    private function registerTranslatorAdapter(): void
+    {
+        $this->app->singleton('translator', function ($app) {
+            $loader = $app['translation.loader'];
+            $locale = $app->getLocale();
+
+            $trans = new \Spawn\Laravel\Translation\AsyncTranslator($loader, $locale);
+            $trans->setFallback($app->getFallbackLocale());
+
+            return $trans;
+        });
     }
 }

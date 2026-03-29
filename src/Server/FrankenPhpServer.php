@@ -48,6 +48,10 @@ class FrankenPhpServer implements ServerInterface
                 $inertia->bootCompleted();
             }
         }
+
+        if (($translator = $this->app->make('translator')) instanceof \Spawn\Laravel\Translation\AsyncTranslator) {
+            $translator->bootCompleted();
+        }
     }
 
     public function start(): void
