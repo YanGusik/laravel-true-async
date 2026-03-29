@@ -118,18 +118,18 @@
 
 | Класс | Свойство | Проблема | Адаптация |
 |---|---|---|---|
-| **`Relation`** | `$constraints` | `noConstraints()` ставит `false` глобально → корутина B читает false при eager load чужого запроса | **Нужна** — гонка при eager loading |
-| **`Number`** | `$locale`, `$currency` | `Number::useLocale('de')` → корутина B ставит `'fr'` → A рендерит цены во `'fr'` | **Нужна** — если приложение мультиязычное |
+| **`Number`** | `$locale`, `$currency` | `Number::useLocale('de')` → корутина B ставит `'fr'` → A рендерит цены во `'fr'`. `withLocale()` тоже опасен: callback может содержать I/O (yield point) | **Нужна** — если приложение мультиязычное |
 | **`Once`** | `$instance` (WeakMap) | `once()` на singleton-сервисе кэширует результат → B получает значение A | **Нужна** — если `once()` используется с per-request данными |
 
-### Не баги — ошибочно помечены ранее
+### Не баги — cooperative multitasking делает их безопасными
 
 | Класс | Свойство | Почему безопасно |
 |---|---|---|
+| `Relation` | `$constraints` | `noConstraints()` переключает флаг, но callback внутри — чистый CPU (построение query, нет I/O). В cooperative multitasking нет yield point → другая корутина не может вклиниться |
+| `Relation` | `$selfJoinCount` | Монотонный counter для уникальных алиасов — race не вызывает дубликатов |
 | `BladeCompiler` | `$componentHashStack` | Используется только при **компиляции** шаблонов, не рендере. Шаблоны кэшируются после первого запроса |
 | `ManagesLayouts` | `$parentPlaceholder` | Детерминированный кэш (hash от имени секции) — одинаковый результат для всех |
 | `View\Component` | `$factory` | `Container::getInstance()->make('view')` — `AsyncViewFactory` уже корутинно-безопасна |
-| `Relation` | `$selfJoinCount` | Монотонный counter для уникальных алиасов — race не вызывает дубликатов |
 
 ### Безопасные — resolvers через `$app['request']` (уже scoped)
 
