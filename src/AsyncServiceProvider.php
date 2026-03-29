@@ -10,6 +10,8 @@ class AsyncServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->registerConfigAdapter();
+
         $this->mergeConfigFrom(__DIR__ . '/../config/async.php', 'async');
 
         $this->commands([
@@ -51,6 +53,15 @@ class AsyncServiceProvider extends ServiceProvider
             \Inertia\ResponseFactory::class,
             \Spawn\Laravel\Inertia\AsyncResponseFactory::class,
         );
+    }
+
+    private function registerConfigAdapter(): void
+    {
+        // Replace the config repository with our async-safe version.
+        // Must happen in register() before other providers read config.
+        $original = $this->app['config'];
+        $async = new \Spawn\Laravel\Config\AsyncConfig($original->all());
+        $this->app->instance('config', $async);
     }
 
     private function registerTranslatorAdapter(): void

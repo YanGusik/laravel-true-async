@@ -14,6 +14,7 @@ Laravel components and third-party packages adapted for safe concurrent executio
 | **Routing** | `Router::$current` overwritten by concurrent requests | `AsyncRouter` | Current route, current request |
 | **Database** | `Connection::$transactions` shared counter | `CoroutineTransactions` trait | Transaction depth counter |
 | **Translation** | `Translator::$locale` overwritten per-request | `AsyncTranslator` | Locale (shared `$loaded` cache) |
+| **Config** | `config()->set()` per-request mutates shared repository | `AsyncConfig` | Per-coroutine overlay, base items shared read-only |
 | **Facades** | `Facade::$resolvedInstance` static cache | `ScopedServiceProxy` | Instance resolution |
 
 ## Third-Party Packages
@@ -33,7 +34,7 @@ Laravel components and third-party packages adapted for safe concurrent executio
 
 ## Safe — No Adaptation Needed
 
-Cache, Queue, Mail, Log, Validation, Filesystem, HTTP Client, Notifications, Config, Encryption, Hashing, Pagination, Sanctum, Passport, Scout, Cashier, Horizon.
+Cache, Queue, Mail, Log, Validation, Filesystem, HTTP Client, Notifications, Encryption, Hashing, Pagination, Sanctum, Passport, Scout, Cashier, Horizon.
 
 ## PHPStan Rule
 

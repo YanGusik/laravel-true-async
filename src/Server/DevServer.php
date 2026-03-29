@@ -59,6 +59,10 @@ class DevServer implements ServerInterface
         if (($translator = $this->app->make('translator')) instanceof \Spawn\Laravel\Translation\AsyncTranslator) {
             $translator->bootCompleted();
         }
+
+        if (($config = $this->app->make('config')) instanceof \Spawn\Laravel\Config\AsyncConfig) {
+            $config->bootCompleted();
+        }
     }
 
     public function start(): void

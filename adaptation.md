@@ -60,7 +60,7 @@
 | **Filesystem / Storage** | `FilesystemManager` кэширует disk-и, но они stateless |
 | **HTTP Client** | `PendingRequest` создаётся заново каждый раз |
 | **Notifications** | Использует Queue/Mail под капотом (безопасны) |
-| **Config** | Загружается при старте, immutable в runtime |
+| ~~**Config**~~ | ~~Загружается при старте, immutable в runtime~~ → **Адаптирован**: `AsyncConfig` — per-coroutine overlay для `set()`, base items shared read-only |
 | **Encryption** | Stateless операции с ключом приложения |
 | **Hashing** | Stateless алгоритмы |
 | **Pagination** | Создаётся заново per-request |
