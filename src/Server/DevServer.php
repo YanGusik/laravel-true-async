@@ -67,6 +67,10 @@ class DevServer implements ServerInterface
         if (($events = $this->app->make('events')) instanceof \Spawn\Laravel\Events\AsyncDispatcher) {
             $events->bootCompleted();
         }
+
+        if (class_exists(\Laravel\Telescope\Telescope::class) && method_exists(\Laravel\Telescope\Telescope::class, 'enableAsyncRecording')) {
+            \Laravel\Telescope\Telescope::enableAsyncRecording();
+        }
     }
 
     public function start(): void

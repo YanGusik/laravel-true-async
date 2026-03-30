@@ -37,6 +37,7 @@ In async mode, multiple HTTP requests execute concurrently inside a single PHP w
 | **spatie/laravel-permission** | [`AsyncPermissionRegistrar`](src/Permission/AsyncPermissionRegistrar.php) | Team ID, wildcard permission index |
 | **inertiajs/inertia-laravel** | [`AsyncResponseFactory`](src/Inertia/AsyncResponseFactory.php) | sharedProps, rootView, version, encryptHistory, urlResolver |
 | **laravel/socialite** | `scopedSingleton` (in `AsyncServiceProvider`) | Fresh manager per coroutine (drivers cache stale request) |
+| **laravel/telescope** | [`CoroutineSafeRecording`](src/Telescope/CoroutineSafeRecording.php) trait + class substitution | entriesQueue, updatesQueue, shouldRecord per coroutine |
 
 ---
 
@@ -55,7 +56,6 @@ Disable these in async mode. They accumulate per-request data in singletons, cau
 | Package | Issue |
 |---|---|
 | **barryvdh/laravel-debugbar** | Singleton collectors (QueryCollector, RouteCollector) accumulate per-request data |
-| **laravel/telescope** | `IncomingEntry` objects accumulate in memory, `$shouldRecord` static flag shared |
 | **livewire/livewire** | Deep per-request state in `LivewireManager`, `wire:stream` broken. Use Inertia instead |
 
 ---
