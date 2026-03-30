@@ -93,7 +93,7 @@ class AsyncServiceProvider extends ServiceProvider
 
     private function registerDebugbarAdapter(): void
     {
-        if (! class_exists(\Barryvdh\Debugbar\LaravelDebugbar::class)) {
+        if (! class_exists(\Fruitcake\LaravelDebugbar\LaravelDebugbar::class)) {
             return;
         }
 
@@ -101,8 +101,8 @@ class AsyncServiceProvider extends ServiceProvider
         // scopedSingleton gives each coroutine its own debugbar instance.
         if ($this->app instanceof \Spawn\Laravel\Foundation\AsyncApplication) {
             $this->app->scopedSingleton(
-                \Barryvdh\Debugbar\LaravelDebugbar::class,
-                fn ($app) => new \Barryvdh\Debugbar\LaravelDebugbar($app),
+                \Fruitcake\LaravelDebugbar\LaravelDebugbar::class,
+                fn ($app) => new \Fruitcake\LaravelDebugbar\LaravelDebugbar($app, $app['request']),
             );
         }
     }
