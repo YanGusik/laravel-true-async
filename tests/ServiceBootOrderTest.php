@@ -303,60 +303,6 @@ class ServiceBootOrderTest extends TestCase
         );
     }
 
-    // ── session ───────────────────────────────────────────────────────────────
-
-    public function test_database_session_handler_is_async(): void
-    {
-        $app = $this->makeApp();
-        $this->setSessionConfig($app);
-        $this->stubDatabaseConnection($app);
-
-        $this->bootWith($app, [
-            \Illuminate\Session\SessionServiceProvider::class,
-            AsyncServiceProvider::class,
-        ]);
-
-        $handler = $app->make('session')->driver('database')->getHandler();
-
-        $this->assertInstanceOf(
-            AsyncDatabaseSessionHandler::class,
-            $handler,
-            'Database session driver must use AsyncDatabaseSessionHandler. ' .
-            'If this fails — afterResolving("session") callback was not registered.'
-        );
-    }
-
-    public function test_database_session_handler_is_async_when_session_resolved_early(): void
-    {
-        $app = $this->makeApp();
-        $this->setSessionConfig($app);
-        $this->stubDatabaseConnection($app);
-
-        $earlyProvider = new class($app) extends ServiceProvider {
-            public function register(): void
-            {
-                $this->app->make('session');
-            }
-            public function boot(): void {}
-        };
-
-        $this->bootWith($app, [
-            \Illuminate\Session\SessionServiceProvider::class,
-            $earlyProvider,
-            AsyncServiceProvider::class,
-        ]);
-
-        $handler = $app->make('session')->driver('database')->getHandler();
-
-        $this->assertInstanceOf(
-            AsyncDatabaseSessionHandler::class,
-            $handler,
-            'Database session driver must use AsyncDatabaseSessionHandler even when ' .
-            'the session manager is resolved before AsyncServiceProvider registers. ' .
-            'If this fails — fireResolvingCallbacks() is missing from tryResolveScoped().'
-        );
-    }
-
     private function setSessionConfig(AsyncApplication $app): void
     {
         $app['config']->set('session.driver', 'database');
@@ -374,5 +320,89 @@ class ServiceBootOrderTest extends TestCase
         $db = $this->createMock(\Illuminate\Database\DatabaseManager::class);
         $db->method('connection')->willReturn($connection);
         $app->instance('db', $db);
+    }
+
+    // ── session ───────────────────────────────────────────────────────────────
+
+    /**
+     * Verifies that the 'database' session driver returns AsyncDatabaseSessionHandler.
+     *
+     * The handler is registered via afterResolving('session', ...) which fires
+     * the moment the SessionManager is first resolved. As long as the extend()
+     * call happens before driver('database') is invoked (it always does — driver()
+     * is called in StartSession middleware, well after boot), the handler is ours.
+     */
+    public function test_database_session_handler_is_async(): void
+    {
+        $app = $this->makeApp();
+        $app['config']->set('session.driver', 'database');
+        $app['config']->set('session.table', 'sessions');
+        $app['config']->set('session.lifetime', 120);
+        $app['config']->set('session.connection', null);
+        $app['config']->set('session.encrypt', false);
+        $app['config']->set('session.serialization', 'php');
+        $app['config']->set('session.cookie', 'laravel_session');
+
+        $this->stubDatabaseConnection($app);
+
+        $this->bootWith($app, [
+            \Illuminate\Session\SessionServiceProvider::class,
+            AsyncServiceProvider::class,
+        ]);
+
+        $handler = $app->make('session')->driver('database')->getHandler();
+
+        $this->assertInstanceOf(
+            AsyncDatabaseSessionHandler::class,
+            $handler,
+            'Database session driver must use AsyncDatabaseSessionHandler. ' .
+            'If this fails — afterResolving("session") callback was not registered.'
+        );
+    }
+
+    /**
+     * Simulates a provider that resolves the session manager early (before AsyncServiceProvider).
+     * The afterResolving callback must still fire and register our driver.
+     */
+    public function test_database_session_handler_is_async_when_session_resolved_early(): void
+    {
+        $app = $this->makeApp();
+        $app['config']->set('session.driver', 'database');
+        $app['config']->set('session.table', 'sessions');
+        $app['config']->set('session.lifetime', 120);
+        $app['config']->set('session.connection', null);
+        $app['config']->set('session.encrypt', false);
+        $app['config']->set('session.serialization', 'php');
+        $app['config']->set('session.cookie', 'laravel_session');
+
+        $this->stubDatabaseConnection($app);
+
+        // Simulates a provider that resolves 'session' manager in register()
+        // (e.g. to register a listener or check the configured driver).
+        $earlyProvider = new class($app) extends ServiceProvider {
+            public function register(): void
+            {
+                $this->app->make('session'); // forces early resolution of SessionManager
+            }
+            public function boot(): void {}
+        };
+
+        $this->bootWith($app, [
+            \Illuminate\Session\SessionServiceProvider::class,
+            $earlyProvider,
+            AsyncServiceProvider::class,
+        ]);
+
+        // driver() is resolved here — afterResolving already fired, extend() was called
+        $handler = $app->make('session')->driver('database')->getHandler();
+
+        $this->assertInstanceOf(
+            AsyncDatabaseSessionHandler::class,
+            $handler,
+            'Database session driver must use AsyncDatabaseSessionHandler even when ' .
+            'the session manager is resolved before AsyncServiceProvider registers. ' .
+            'If this fails — afterResolving fires too early (before our extend call) ' .
+            'OR the extend was not registered at all.'
+        );
     }
 }
