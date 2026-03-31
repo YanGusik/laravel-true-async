@@ -5,27 +5,10 @@ namespace Spawn\Laravel\Foundation;
 use Closure;
 use Illuminate\Foundation\Application;
 
-use function Async\coroutine_context;
+use function Async\current_context;
 
 class AsyncApplication extends Application
 {
-    /**
-     * Laravel services that are always request-scoped.
-     */
-    private const LARAVEL_SCOPED = [
-        'session',
-        'auth',
-        'auth.driver',
-        'cookie',
-        // NOTE: 'db' cannot be scoped here because DatabaseServiceProvider::boot() sets
-        // Model::setConnectionResolver($app['db']) as a static property. A scoped DatabaseManager
-        // tied to a specific coroutine context gets GC'd after the coroutine finishes, leaving
-        // Model::$resolver pointing to a destroyed object → segfault.
-        // Physical connection isolation is handled by PDO Pool at the C level instead.
-        // Known limitation: Connection::$transactions counter is shared across coroutines.
-        // Workaround: use db.transaction() which goes through DatabaseTransactionsManager.
-    ];
-
     /**
      * Scoped services that are safe to proxy via offsetGet (used by Facades).
      * Services that get passed to typed PHP parameters must NOT be here,
@@ -34,9 +17,9 @@ class AsyncApplication extends Application
      * 'cookie' is excluded: AuthManager passes $app['cookie'] to setCookieJar(QueueingFactory).
      * 'auth.driver' is excluded: guards are passed to typed parameters in some middleware.
      */
-    private const FACADE_PROXIED = [
-        'auth',
-        'session',
+    private const FACADE_PROXIED_MAP = [
+        'auth'    => true,
+        'session' => true,
     ];
 
     /**
@@ -50,11 +33,19 @@ class AsyncApplication extends Application
     private array $scopedBindings = [];
 
     /**
-     * Register a scoped singleton — one instance per coroutine context.
+     * Cached config('async.scoped_services') as alias => true hash map.
+     * Populated once in enableAsyncMode() to avoid per-resolve config lookups.
      */
+    private array $scopedServiceCache = [];
+
     public function enableAsyncMode(): void
     {
         $this->asyncMode = true;
+
+        if ($this->resolved('config')) {
+            $scoped = $this->make('config')->get('async.scoped_services', []);
+            $this->scopedServiceCache = array_flip($scoped);
+        }
     }
 
     public function scopedSingleton(string $abstract, Closure $factory): void
@@ -67,8 +58,8 @@ class AsyncApplication extends Application
         if ($this->asyncMode) {
             $alias = $this->getAlias($key);
 
-            if (in_array($alias, self::FACADE_PROXIED, true)) {
-                return new ScopedServiceProxy(fn() => $this->resolveScoped($alias));
+            if (isset(self::FACADE_PROXIED_MAP[$alias])) {
+                return new ScopedServiceProxy(fn() => $this->tryResolveScoped($alias));
             }
         }
 
@@ -77,52 +68,34 @@ class AsyncApplication extends Application
 
     protected function resolve($abstract, $parameters = [], $raiseEvents = true)
     {
-        if (!$this->asyncMode) {
-            return parent::resolve($abstract, $parameters, $raiseEvents);
-        }
+        if ($this->asyncMode) {
+            $alias = $this->getAlias($abstract);
+            $instance = $this->tryResolveScoped($alias);
 
-        $alias = $this->getAlias($abstract);
-
-        // Request is always resolved from coroutine context
-        if ($alias === 'request') {
-            $request = coroutine_context()->find('laravel.request');
-
-            if ($request !== null) {
-                return $request;
+            if ($instance !== null) {
+                return $instance;
             }
-        }
-
-        if ($this->isScopedService($alias)) {
-            return $this->resolveScoped($alias);
         }
 
         return parent::resolve($abstract, $parameters, $raiseEvents);
     }
 
-    private function isScopedService(string $alias): bool
+    /**
+     * Resolve a scoped service from the current context, or return null
+     * if the alias is not a scoped service.
+     */
+    private function tryResolveScoped(string $alias): mixed
     {
-        if (in_array($alias, self::LARAVEL_SCOPED, true)) {
-            return true;
+        $key = ScopedService::tryFrom($alias);
+
+        if ($key === null && !isset($this->scopedBindings[$alias]) && !isset($this->scopedServiceCache[$alias])) {
+            return null;
         }
 
-        if (isset($this->scopedBindings[$alias])) {
-            return true;
-        }
+        $ctx = current_context();
+        $ctxKey = $key ?? $alias;
 
-        if ($this->resolved('config')) {
-            $scoped = parent::resolve('config')->get('async.scoped_services', []);
-            return in_array($alias, $scoped, true);
-        }
-
-        return false;
-    }
-
-    private function resolveScoped(string $alias): mixed
-    {
-        $ctx = coroutine_context();
-        $key = 'laravel.scoped.' . $alias;
-
-        $instance = $ctx->find($key);
+        $instance = $ctx->find($ctxKey);
 
         if ($instance !== null) {
             return $instance;
@@ -140,7 +113,7 @@ class AsyncApplication extends Application
             }
         }
 
-        $ctx->set($key, $instance);
+        $ctx->set($ctxKey, $instance);
 
         return $instance;
     }

@@ -10,12 +10,24 @@
     "ext-pdo": "*"
   },
   "require-dev": {
-    "phpunit/phpunit": "^11.0"
+    "barryvdh/laravel-debugbar": "^4.2",
+    "inertiajs/inertia-laravel": "^3.0",
+    "laravel/socialite": "^5.26",
+    "laravel/telescope": "^5.19",
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^11.0",
+    "spatie/laravel-permission": "^7.2"
   },
   "autoload": {
     "psr-4": {
       "Spawn\\Laravel\\": "src/"
-    }
+    },
+    "classmap": [
+      "src/Telescope/Telescope.php"
+    ],
+    "exclude-from-classmap": [
+      "vendor/laravel/telescope/src/Telescope.php"
+    ]
   },
   "autoload-dev": {
     "psr-4": {

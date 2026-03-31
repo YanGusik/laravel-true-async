@@ -10,9 +10,10 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 use Spawn\Laravel\Contracts\ServerInterface;
+use Spawn\Laravel\Foundation\ScopedService;
 use Spawn\Laravel\Server\Concerns\ManagesDatabasePool;
 
-use function Async\coroutine_context;
+use function Async\current_context;
 
 class FrankenPhpServer implements ServerInterface
 {
@@ -29,6 +30,40 @@ class FrankenPhpServer implements ServerInterface
         }
 
         $this->configureDatabasePool();
+
+        if (($view = $this->app->make('view')) instanceof \Spawn\Laravel\View\AsyncViewFactory) {
+            $view->bootCompleted();
+        }
+
+        if ($this->app->bound(\Spatie\Permission\PermissionRegistrar::class)) {
+            $registrar = $this->app->make(\Spatie\Permission\PermissionRegistrar::class);
+            if ($registrar instanceof \Spawn\Laravel\Permission\AsyncPermissionRegistrar) {
+                $registrar->bootCompleted();
+            }
+        }
+
+        if ($this->app->bound(\Inertia\ResponseFactory::class)) {
+            $inertia = $this->app->make(\Inertia\ResponseFactory::class);
+            if ($inertia instanceof \Spawn\Laravel\Inertia\AsyncResponseFactory) {
+                $inertia->bootCompleted();
+            }
+        }
+
+        if (($translator = $this->app->make('translator')) instanceof \Spawn\Laravel\Translation\AsyncTranslator) {
+            $translator->bootCompleted();
+        }
+
+        if (($config = $this->app->make('config')) instanceof \Spawn\Laravel\Config\AsyncConfig) {
+            $config->bootCompleted();
+        }
+
+        if (($events = $this->app->make('events')) instanceof \Spawn\Laravel\Events\AsyncDispatcher) {
+            $events->bootCompleted();
+        }
+
+        if (class_exists(\Laravel\Telescope\Telescope::class) && method_exists(\Laravel\Telescope\Telescope::class, 'enableAsyncRecording')) {
+            \Laravel\Telescope\Telescope::enableAsyncRecording();
+        }
     }
 
     public function start(): void
@@ -53,7 +88,7 @@ class FrankenPhpServer implements ServerInterface
             try {
                 $request = $this->buildRequest($frankenRequest);
 
-                coroutine_context()->set('laravel.request', $request);
+                current_context()->set(ScopedService::REQUEST, $request);
 
                 $kernel = $this->app->make(Kernel::class);
                 $laravelResponse = $kernel->handle($request);
@@ -172,10 +207,22 @@ class FrankenPhpServer implements ServerInterface
     {
         $frankenResponse->setStatus($response->getStatusCode());
 
-        foreach ($response->headers->all() as $name => $values) {
+        // Regular headers — setHeader replaces (correct for single-value headers).
+        foreach ($response->headers->allPreserveCaseWithoutCookies() as $name => $values) {
+            $first = true;
             foreach ($values as $value) {
-                $frankenResponse->setHeader($name, $value);
+                if ($first) {
+                    $frankenResponse->setHeader($name, $value);
+                    $first = false;
+                } else {
+                    $frankenResponse->addHeader($name, $value);
+                }
             }
+        }
+
+        // Cookies — addHeader to allow multiple Set-Cookie headers.
+        foreach ($response->headers->getCookies() as $cookie) {
+            $frankenResponse->addHeader('Set-Cookie', (string) $cookie);
         }
 
         $frankenResponse->write((string) $response->getContent());

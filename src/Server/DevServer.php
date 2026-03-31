@@ -8,9 +8,10 @@ use Async\Scope;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
 use Spawn\Laravel\Contracts\ServerInterface;
+use Spawn\Laravel\Foundation\ScopedService;
 use Spawn\Laravel\Server\Concerns\ManagesDatabasePool;
 
-use function Async\coroutine_context;
+use function Async\current_context;
 
 class DevServer implements ServerInterface
 {
@@ -36,16 +37,52 @@ class DevServer implements ServerInterface
         }
 
         $this->configureDatabasePool();
+
+        if (($view = $this->app->make('view')) instanceof \Spawn\Laravel\View\AsyncViewFactory) {
+            $view->bootCompleted();
+        }
+
+        if ($this->app->bound(\Spatie\Permission\PermissionRegistrar::class)) {
+            $registrar = $this->app->make(\Spatie\Permission\PermissionRegistrar::class);
+            if ($registrar instanceof \Spawn\Laravel\Permission\AsyncPermissionRegistrar) {
+                $registrar->bootCompleted();
+            }
+        }
+
+        if ($this->app->bound(\Inertia\ResponseFactory::class)) {
+            $inertia = $this->app->make(\Inertia\ResponseFactory::class);
+            if ($inertia instanceof \Spawn\Laravel\Inertia\AsyncResponseFactory) {
+                $inertia->bootCompleted();
+            }
+        }
+
+        if (($translator = $this->app->make('translator')) instanceof \Spawn\Laravel\Translation\AsyncTranslator) {
+            $translator->bootCompleted();
+        }
+
+        if (($config = $this->app->make('config')) instanceof \Spawn\Laravel\Config\AsyncConfig) {
+            $config->bootCompleted();
+        }
+
+        if (($events = $this->app->make('events')) instanceof \Spawn\Laravel\Events\AsyncDispatcher) {
+            $events->bootCompleted();
+        }
+
+        if (class_exists(\Laravel\Telescope\Telescope::class) && method_exists(\Laravel\Telescope\Telescope::class, 'enableAsyncRecording')) {
+            \Laravel\Telescope\Telescope::enableAsyncRecording();
+        }
     }
 
     public function start(): void
     {
         $shutdownState = new FutureState();
-        $shutdownFuture = new Future($shutdownState);
+        $shutdownFuture = (new Future($shutdownState))->ignore();
 
-        pcntl_async_signals(true);
-        pcntl_signal(SIGTERM, fn() => $shutdownState->complete(null));
-        pcntl_signal(SIGINT, fn() => $shutdownState->complete(null));
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+            pcntl_signal(SIGTERM, fn() => $shutdownState->complete(null));
+            pcntl_signal(SIGINT, fn() => $shutdownState->complete(null));
+        }
 
         $this->serverScope = new Scope();
         $serverScope = $this->serverScope;
@@ -66,13 +103,22 @@ class DevServer implements ServerInterface
             echo "Listening on tcp://{$this->host}:{$this->port}\n";
 
             while (true) {
-                $client = stream_socket_accept($socket, timeout: -1);
+                $client = @stream_socket_accept($socket, timeout: -1);
 
                 if ($client === false) {
                     continue;
                 }
 
-                $serverScope->spawn($this->handleConnection(...), $client);
+                // Each request gets its own Scope so that current_context()
+                // is isolated per-request and child coroutines can access
+                // request-scoped services via hierarchical find().
+                $requestScope = Scope::inherit($serverScope);
+
+                $requestScope->setExceptionHandler(function (\Throwable $e) {
+                    echo "[request error] " . $e::class . ": " . $e->getMessage() . "\n";
+                });
+
+                $requestScope->spawn($this->handleConnection(...), $client, $requestScope);
             }
         });
 
@@ -84,7 +130,7 @@ class DevServer implements ServerInterface
         }
     }
 
-    private function handleConnection(mixed $client): void
+    private function handleConnection(mixed $client, Scope $requestScope): void
     {
         try {
             $raw = $this->readRaw($client);
@@ -95,7 +141,7 @@ class DevServer implements ServerInterface
 
             $request = RequestParser::parse($raw);
 
-            coroutine_context()->set('laravel.request', $request);
+            current_context()->set(ScopedService::REQUEST, $request);
 
             $kernel = $this->app->make(Kernel::class);
             $response = $kernel->handle($request);
@@ -104,6 +150,7 @@ class DevServer implements ServerInterface
 
             $kernel->terminate($request, $response);
         } finally {
+            $requestScope->dispose();
             fclose($client);
         }
     }

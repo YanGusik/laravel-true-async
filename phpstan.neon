@@ -1,0 +1,11 @@
+parameters:
+    level: 0
+    paths:
+        - src
+    customRulesetUsed: true
+    ignoreErrors:
+        - identifier: new.static
+        - identifier: ignore.unmatchedLine
+
+rules:
+    - Spawn\Laravel\PHPStan\MutableStaticPropertyRule
