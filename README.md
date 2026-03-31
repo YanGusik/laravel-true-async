@@ -1,7 +1,5 @@
 <p align="center"><img width="335" height="61" src="/logo.svg" alt="Logo Laravel Spawn"></p>
 
-> ⚠️ **Early development.** Package name and namespace will be updated to `laravel-spawn` once the project reaches a stable state.
-
 Laravel adapter for [PHP TrueAsync](https://github.com/true-async) — a PHP fork with a native coroutine scheduler and async I/O. Think Laravel Octane, but instead of Swoole or RoadRunner the runtime is TrueAsync.
 
 **One worker. Many requests. Zero threads.**
