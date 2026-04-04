@@ -21,7 +21,8 @@ use Throwable;
 
 class Telescope
 {
-    use ExtractsMailableTags,
+    use AuthorizesRequests,
+        ExtractsMailableTags,
         ListensForStorageOpportunities,
         RegistersWatchers,
         \Spawn\Laravel\Telescope\CoroutineSafeRecording;
@@ -138,6 +139,14 @@ class Telescope
         static::registerWatchers($app);
 
         static::registerMailableTagExtractor();
+
+        // In async worker mode, recording is managed per-request by the server
+        // (startRecording on request arrival, stopRecording after terminate).
+        // At bootstrap there is no real HTTP request yet, so we must not call
+        // handlingApprovedRequest() which would access $app['request'].
+        if (static::$asyncMode) {
+            return;
+        }
 
         if (! static::runningWithinOctane($app) &&
             (static::runningApprovedArtisanCommand($app) ||
@@ -611,19 +620,29 @@ class Telescope
     }
 
     /**
+     * Path to the Telescope package root (cached to avoid repeated reflection).
+     */
+    private static ?string $packagePath = null;
+
+    private static function distPath(): string
+    {
+        return (static::$packagePath ??= dirname((new \ReflectionClass(EntryType::class))->getFileName(), 2)) . '/dist';
+    }
+
+    /**
      * Get the CSS for the Telescope dashboard.
      *
      * @return Illuminate\Contracts\Support\Htmlable
      */
     public static function css()
     {
-        if (($app = @file_get_contents(__DIR__.'/../dist/app.css')) === false) {
+        if (($app = @file_get_contents(static::distPath().'/app.css')) === false) {
             throw new RuntimeException('Unable to load the Telescope dashboard app CSS.');
         }
 
         $styles = match (static::$useDarkTheme) {
-            true => @file_get_contents(__DIR__.'/../dist/styles-dark.css'),
-            default => @file_get_contents(__DIR__.'/../dist/styles.css'),
+            true => @file_get_contents(static::distPath().'/styles-dark.css'),
+            default => @file_get_contents(static::distPath().'/styles.css'),
         };
 
         if ($styles === false) {
@@ -643,7 +662,7 @@ class Telescope
      */
     public static function js()
     {
-        if (($js = @file_get_contents(__DIR__.'/../dist/app.js')) === false) {
+        if (($js = @file_get_contents(static::distPath().'/app.js')) === false) {
             throw new RuntimeException('Unable to load the Telescope dashboard JavaScript.');
         }
 

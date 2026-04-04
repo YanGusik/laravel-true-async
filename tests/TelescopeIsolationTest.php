@@ -14,6 +14,11 @@ class TelescopeIsolationTest extends AsyncTestCase
     {
         parent::setUp();
 
+        // The override Telescope class lives in overrides/ and is normally loaded
+        // by a prepending autoloader registered in AsyncServiceProvider::register().
+        // In unit tests we load it directly so the class is available.
+        require_once __DIR__ . '/../overrides/Telescope.php';
+
         // Reset Telescope state
         Telescope::$entriesQueue = [];
         Telescope::$updatesQueue = [];

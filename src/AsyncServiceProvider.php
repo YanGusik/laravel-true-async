@@ -151,6 +151,10 @@ class AsyncServiceProvider extends ServiceProvider
         spl_autoload_register(function (string $class): void {
             if ($class === 'Laravel\\Telescope\\Telescope') {
                 require __DIR__ . '/../overrides/Telescope.php';
+                // Enable per-coroutine recording immediately so that
+                // Telescope::start() (called during boot) knows to skip
+                // the handlingApprovedRequest() check that requires $app['request'].
+                \Laravel\Telescope\Telescope::enableAsyncRecording();
             }
         }, prepend: true);
     }

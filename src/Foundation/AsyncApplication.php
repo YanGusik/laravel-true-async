@@ -59,9 +59,14 @@ class AsyncApplication extends Application
      * returning null — which prevents a TypeError in UrlGenerator::__construct when the
      * exception handler renders an error before the first HTTP request is processed.
      */
+    /**
+     * 'request' is always resolvable: from context, instances, or fallback.
+     * This prevents crashes when code checks bound('request') during bootstrap
+     * (before any HTTP request arrives) — e.g. AuthServiceProvider::registerRequestRebindHandler().
+     */
     public function bound($abstract): bool
     {
-        if ($this->asyncMode && $this->getAlias($abstract) === 'request') {
+        if ($this->getAlias($abstract) === 'request') {
             return true;
         }
 
@@ -70,35 +75,22 @@ class AsyncApplication extends Application
 
     public function offsetGet($key): mixed
     {
-        if ($this->asyncMode) {
-            $alias = $this->getAlias($key);
+        $alias = $this->getAlias($key);
 
-            if (isset(self::FACADE_PROXIED_MAP[$alias])) {
-                return new ScopedServiceProxy(fn() => $this->tryResolveScoped($alias));
-            }
+        if ($this->asyncMode && isset(self::FACADE_PROXIED_MAP[$alias])) {
+            return new ScopedServiceProxy(fn() => $this->tryResolveScoped($alias));
+        }
 
-            // HandleExceptions calls $app['request'] when rendering errors (line 221).
-            // In FrankenPHP the PHP SAPI is not 'cli', so runningInConsole() = false and
-            // it always takes the HTTP branch. If no request is available yet (bootstrap
-            // phase, before the first onRequest() call), parent::resolve would try
-            // build('request') → ReflectionException, crashing the error handler itself.
-            //
-            // Resolution priority:
-            //   1. context  — real request set by FrankenPhpServer before kernel->handle()
-            //   2. instances — set by Kernel::sendRequestThroughRouter()
-            //   3. fallback — empty Request so the error handler can render and log properly
-            if ($alias === 'request') {
-                $fromContext = current_context()->find(ScopedService::REQUEST);
-                if ($fromContext !== null) {
-                    return $fromContext;
-                }
-
-                if (isset($this->instances['request'])) {
-                    return $this->instances['request'];
-                }
-
-                return \Illuminate\Http\Request::createFromGlobals();
-            }
+        // 'request' is always safe to resolve — even during bootstrap when no
+        // HTTP request exists yet. Without this, any code that touches $app['request']
+        // before the first onRequest() call crashes with "Class request does not exist".
+        //
+        // Resolution priority:
+        //   1. context  — per-coroutine request (async mode, during request handling)
+        //   2. instances — set by Kernel::sendRequestThroughRouter()
+        //   3. fallback — empty Request so bootstrap/error handler can proceed
+        if ($alias === 'request') {
+            return $this->resolveRequest();
         }
 
         return parent::offsetGet($key);
@@ -106,22 +98,15 @@ class AsyncApplication extends Application
 
     protected function resolve($abstract, $parameters = [], $raiseEvents = true)
     {
+        $alias = $this->getAlias($abstract);
+
+        // 'request' must never fall through to build('request') — it's a string
+        // alias, not a class name, so ReflectionClass would throw.
+        if ($alias === 'request') {
+            return $this->resolveRequest();
+        }
+
         if ($this->asyncMode) {
-            $alias = $this->getAlias($abstract);
-
-            // 'request' has dedicated safe handling in offsetGet().
-            // Inside resolve() we must not let parent::resolve fall through to
-            // build('request') — 'request' is a string alias, not a class name.
-            if ($alias === 'request') {
-                $fromContext = current_context()->find(ScopedService::REQUEST);
-                if ($fromContext !== null) {
-                    return $fromContext;
-                }
-
-                return $this->instances['request']
-                    ?? \Illuminate\Http\Request::createFromGlobals();
-            }
-
             $instance = $this->tryResolveScoped($alias);
 
             if ($instance !== null) {
@@ -130,6 +115,22 @@ class AsyncApplication extends Application
         }
 
         return parent::resolve($abstract, $parameters, $raiseEvents);
+    }
+
+    /**
+     * Resolve the current request from context, instances, or fallback.
+     */
+    private function resolveRequest(): \Illuminate\Http\Request
+    {
+        if ($this->asyncMode) {
+            $fromContext = current_context()->find(ScopedService::REQUEST);
+            if ($fromContext !== null) {
+                return $fromContext;
+            }
+        }
+
+        return $this->instances['request']
+            ?? \Illuminate\Http\Request::createFromGlobals();
     }
 
     /**

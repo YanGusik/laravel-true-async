@@ -87,7 +87,7 @@ class DevServer implements ServerInterface
         $this->serverScope = new Scope();
         $serverScope = $this->serverScope;
 
-        $serverScope->setExceptionHandler(function (\Throwable $e) {
+        $serverScope->setExceptionHandler(function (\Async\Scope $scope, \Async\Coroutine $coroutine, \Throwable $e) {
             echo "[server error] " . $e::class . ": " . $e->getMessage() . "\n";
         });
 

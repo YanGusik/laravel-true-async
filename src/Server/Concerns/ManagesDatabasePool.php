@@ -37,6 +37,12 @@ trait ManagesDatabasePool
                 )
             );
         }
+
+        // If any connections were already created during bootstrap (before pool
+        // options were set), purge them so they get re-created with pool enabled.
+        if ($this->app->bound('db')) {
+            $this->app->make('db')->purge();
+        }
     }
 
     /**

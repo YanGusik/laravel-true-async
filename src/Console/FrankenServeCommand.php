@@ -11,7 +11,6 @@ class FrankenServeCommand extends Command
         {--host=0.0.0.0       : Host to listen on}
         {--port=8080           : Port to listen on}
         {--workers=1           : Number of PHP worker threads}
-        {--buffer=20           : Per-worker request buffer size (max queued requests)}
         {--watch               : Watch for file changes and automatically reload workers}';
 
     protected $description = 'Start the TrueAsync FrankenPHP server';
@@ -23,7 +22,6 @@ class FrankenServeCommand extends Command
         $host    = $this->option('host');
         $port    = (int) $this->option('port');
         $workers = max(1, (int) $this->option('workers'));
-        $buffer  = max(1, (int) $this->option('buffer'));
         $watch   = (bool) $this->option('watch');
 
         $stateDir = storage_path('app/trueasync');
@@ -35,9 +33,9 @@ class FrankenServeCommand extends Command
         $caddyfilePath = $stateDir . '/Caddyfile';
 
         $this->writeWorkerFile($workerPath);
-        $this->writeCaddyfile($caddyfilePath, $workerPath, $host, $port, $workers, $buffer, $watch);
+        $this->writeCaddyfile($caddyfilePath, $workerPath, $host, $port, $workers, $watch);
 
-        $this->info("Starting TrueAsync FrankenPHP on {$host}:{$port} ({$workers} worker(s), buffer={$buffer})" . ($watch ? ' (--watch)' : ''));
+        $this->info("Starting TrueAsync FrankenPHP on {$host}:{$port} ({$workers} worker(s))" . ($watch ? ' (--watch)' : ''));
         $this->line("  Worker:    {$workerPath}");
         $this->line("  Caddyfile: {$caddyfilePath}");
         $this->newLine();
@@ -100,7 +98,6 @@ class FrankenServeCommand extends Command
         string $host,
         int $port,
         int $workers,
-        int $buffer,
         bool $watch = false,
     ): void {
         $appPath       = base_path();
@@ -135,7 +132,6 @@ class FrankenServeCommand extends Command
                         file {$workerPath}
                         num {$workers}
                         async
-                        buffer_size {$buffer}
                         match *{$watchDirective}
                     }
                 }

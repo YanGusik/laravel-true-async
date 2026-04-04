@@ -2,9 +2,19 @@
 
 namespace Spawn\Laravel\Tests;
 
+use Illuminate\Support\Facades\Facade;
+use Spawn\Laravel\AsyncServiceProvider;
+use Spawn\Laravel\Session\AsyncDatabaseSessionHandler;
+
 use function Async\delay;
 class DatabaseIsolationTest extends AsyncTestCase
 {
+    protected function tearDown(): void
+    {
+        Facade::clearResolvedInstances();
+        parent::tearDown();
+    }
+
     public function test_database_manager_is_singleton_across_coroutines(): void
     {
         $app = $this->createApp();
@@ -63,5 +73,77 @@ class DatabaseIsolationTest extends AsyncTestCase
 
         // across coroutines — different instances
         $this->assertNotSame($a1, $b1);
+    }
+
+    /**
+     * Verifies that session handlers in different coroutines share the same
+     * Connection object (from the shared DatabaseManager singleton), not
+     * create a new DB connection per coroutine.
+     */
+    public function test_session_handler_reuses_db_connection_across_coroutines(): void
+    {
+        $app = $this->createApp();
+
+        $app->instance('config', new \Illuminate\Config\Repository([
+            'async'   => ['scoped_services' => [], 'db_pool' => ['enabled' => false, 'min' => 2, 'max' => 10]],
+            'app'     => ['locale' => 'en', 'fallback_locale' => 'en'],
+            'session' => [
+                'driver'     => 'database',
+                'table'      => 'sessions',
+                'lifetime'   => 120,
+                'connection' => null,
+                'encrypt'    => false,
+                'serialization' => 'php',
+                'cookie'     => 'laravel_session',
+            ],
+        ]));
+
+        // Single shared Connection mock — DatabaseManager always returns this same instance
+        $sharedConnection = $this->createMock(\Illuminate\Database\ConnectionInterface::class);
+        $connectionCallCount = 0;
+
+        $db = $this->createMock(\Illuminate\Database\DatabaseManager::class);
+        $db->method('connection')->willReturnCallback(function () use ($sharedConnection, &$connectionCallCount) {
+            $connectionCallCount++;
+            return $sharedConnection;
+        });
+        $app->instance('db', $db);
+
+        Facade::setFacadeApplication($app);
+
+        foreach ([
+            \Illuminate\Session\SessionServiceProvider::class,
+            AsyncServiceProvider::class,
+        ] as $provider) {
+            $app->register($provider);
+        }
+        $app->boot();
+
+        // Resolve session handlers across parallel coroutines
+        $results = $this->runParallel([
+            'a' => function () use ($app) {
+                $handler = $app->make('session')->driver('database')->getHandler();
+                $this->assertInstanceOf(AsyncDatabaseSessionHandler::class, $handler);
+                // Access the connection via reflection
+                $ref = new \ReflectionProperty(\Illuminate\Session\DatabaseSessionHandler::class, 'connection');
+                $ref->setAccessible(true);
+                return spl_object_id($ref->getValue($handler));
+            },
+            'b' => function () use ($app) {
+                $handler = $app->make('session')->driver('database')->getHandler();
+                $this->assertInstanceOf(AsyncDatabaseSessionHandler::class, $handler);
+                $ref = new \ReflectionProperty(\Illuminate\Session\DatabaseSessionHandler::class, 'connection');
+                $ref->setAccessible(true);
+                return spl_object_id($ref->getValue($handler));
+            },
+        ]);
+
+        // Both coroutines must get the same Connection object (same spl_object_id)
+        $this->assertSame(
+            $results['a'],
+            $results['b'],
+            'Session handlers in different coroutines must share the same DB Connection object. ' .
+            'If this fails, each coroutine is creating a new database connection for sessions.'
+        );
     }
 }

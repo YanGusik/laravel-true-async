@@ -84,11 +84,18 @@ class FrankenPhpServer implements ServerInterface
         // without a running scheduler — causing a hang.
         // The pool initializes lazily on the first DB access inside a request coroutine.
 
-        FrankenHttpServer::onRequest(function (FrankenRequest $frankenRequest, FrankenResponse $frankenResponse) {
+        $telescopeEnabled = class_exists(\Laravel\Telescope\Telescope::class)
+            && method_exists(\Laravel\Telescope\Telescope::class, 'isRecording');
+
+        FrankenHttpServer::onRequest(function (FrankenRequest $frankenRequest, FrankenResponse $frankenResponse) use ($telescopeEnabled) {
             try {
                 $request = $this->buildRequest($frankenRequest);
 
                 current_context()->set(ScopedService::REQUEST, $request);
+
+                if ($telescopeEnabled) {
+                    \Laravel\Telescope\Telescope::startRecording(false);
+                }
 
                 $kernel = $this->app->make(Kernel::class);
                 $laravelResponse = $kernel->handle($request);
@@ -146,6 +153,19 @@ class FrankenPhpServer implements ServerInterface
             $serverPort = $appPort ? (string) $appPort : '80';
         }
 
+        // Extract REMOTE_ADDR and REMOTE_PORT from FrankenPHP's "IP:port" format.
+        $remoteAddr = '127.0.0.1';
+        $remotePort = '';
+        $rawRemote  = $frankenRequest->getRemoteAddr();
+        if ($rawRemote !== '') {
+            if (($lastColon = strrpos($rawRemote, ':')) !== false) {
+                $remoteAddr = substr($rawRemote, 0, $lastColon);
+                $remotePort = substr($rawRemote, $lastColon + 1);
+            } else {
+                $remoteAddr = $rawRemote;
+            }
+        }
+
         // Build a $_SERVER-equivalent array from available headers
         $server = [
             'REQUEST_METHOD'  => $method,
@@ -154,6 +174,8 @@ class FrankenPhpServer implements ServerInterface
             'SERVER_PROTOCOL' => 'HTTP/1.1',
             'SERVER_NAME'     => $serverName,
             'SERVER_PORT'     => $serverPort,
+            'REMOTE_ADDR'     => $remoteAddr,
+            'REMOTE_PORT'     => $remotePort,
         ];
 
         foreach ($headers as $name => $value) {
