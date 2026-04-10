@@ -158,18 +158,37 @@ return [
 
 ## Benchmarks
 
-### Laravel — TrueAsync vs Swoole Octane (4 workers, real DB workload)
+**Load:** 840 req/s `/hello` + 360 req/s `/test` = 1 200 req/s total · constant-arrival-rate · 30s · 12 workers each · WSL2 (Linux 6.6 on Windows)
 
-Endpoint: 5 real SQL queries per request. PostgreSQL 16. WSL2. k6 at 1,000 req/s for 30s.
-
-| Metric | Swoole Octane | TrueAsync | Difference |
+| Metric | PHP-FPM (12w) | Octane Swoole (12w) | TrueAsync (12w) |
 |---|---|---|---|
-| Throughput | 206 req/s | **632 req/s** | **3.1x** |
-| Avg latency | 4,300ms | **850ms** | 5x faster |
-| Median latency | 4,820ms | **51ms** | **94x faster** |
-| p95 latency | 5,020ms | **288ms** | 17x faster |
+| Target rate | 1 200 req/s | 1 200 req/s | 1 200 req/s |
+| Actual throughput | ~200 req/s | ~752 req/s | **~1 118 req/s** |
+| Dropped iterations | ~28 000 | ~5 000 | **20** |
+| Avg latency | ~4 000ms | ~880ms | **13ms** |
+| p95 latency | ~5 000ms | 2 320ms | **21ms** |
+| p95 < 200ms | ✗ | ✗ | **✓** |
+| Failed requests | 0% | 0% | 0% |
+| DB connections (peak) | — | — | 120 |
 
-Swoole blocks one worker per DB query. TrueAsync yields the worker to the scheduler while waiting — a single worker handles hundreds of concurrent I/O operations.
+### Why TrueAsync wins on DB-bound load
+
+| | PHP-FPM | Octane Swoole | TrueAsync |
+|---|---|---|---|
+| Request model | Process per request | 1 process = 1 request at a time | 1 worker = N coroutines |
+| DB I/O | Blocking (new conn each req) | Blocking (PDO synchronous) | Non-blocking (coroutine yield) |
+| Memory model | Stateless | Long-lived process | Long-lived process + coroutine context isolation |
+| App bootstrap | Every request | Once per worker | Once per worker |
+
+Swoole keeps the app in memory (avoids bootstrap cost) but PDO is still synchronous — a worker blocked on a DB call cannot accept another request. TrueAsync yields the coroutine on every DB call, so one worker handles hundreds of concurrent DB-bound requests without blocking.
+
+### Notes
+
+- Each adapter has its own PostgreSQL instance on a separate port to avoid interference
+- `APP_DEBUG=false` in all setups for fair comparison
+- OPcache enabled in PHP-FPM
+- `max_connections=500` in all PostgreSQL instances
+- Absolute numbers will be higher on bare metal (benchmarks run on WSL2)
 
 Full benchmark: [ta_benchmark](https://github.com/YanGusik/ta_benchmark)
 
