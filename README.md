@@ -62,6 +62,22 @@ Then run `composer update`.
 
 The service provider is auto-discovered by Laravel.
 
+**Replace the Application class in `bootstrap/app.php`:**
+
+```php
+// before
+$app = new Illuminate\Foundation\Application(
+    $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__)
+);
+
+// after
+$app = new Spawn\Laravel\Foundation\AsyncApplication(
+    $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__)
+);
+```
+
+This is required for per-coroutine isolation of `auth`, `session`, and `request`. Without it the service adapters register correctly but state isolation does not work.
+
 Publish the config:
 
 ```bash
