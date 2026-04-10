@@ -12,12 +12,15 @@ class AsyncServiceProvider extends ServiceProvider
     {
         $this->registerConfigAdapter();
         $this->registerEventDispatcherAdapter();
+        $this->registerRouterAdapter();
         $this->registerTranslatorAdapter();
         $this->registerSessionAdapter();
+        $this->registerDatabaseAdapter();
         $this->registerPermissionAdapter();
         $this->registerInertiaAdapter();
         $this->registerSocialiteAdapter();
         $this->registerDebugbarAdapter();
+        $this->registerViewAdapter();
         $this->registerTelescopeAdapter();
 
         $this->mergeConfigFrom(__DIR__ . '/../config/async.php', 'async');
@@ -118,6 +121,46 @@ class AsyncServiceProvider extends ServiceProvider
         }
     }
 
+    private function registerDatabaseAdapter(): void
+    {
+        // Replace the stock Connection subclasses with async-safe versions that
+        // store the $transactions counter in coroutine_context() instead of on the
+        // shared Connection instance.
+        //
+        // PDO Pool gives each coroutine its own physical PDO connection, but
+        // DatabaseManager caches one Connection object per connection name. Without
+        // this fix, concurrent beginTransaction() calls see each other's counter:
+        // coroutine B increments an already-1 counter → createSavepoint() on a PDO
+        // that never received BEGIN → wrong behavior on all drivers.
+        //
+        // Connection::resolverFor() is the official Laravel extension point;
+        // ConnectionFactory::createConnection() checks it before its switch/match.
+        \Illuminate\Database\Connection::resolverFor(
+            'mysql',
+            fn($pdo, $db, $prefix, $config) => new \Spawn\Laravel\Database\AsyncMySqlConnection($pdo, $db, $prefix, $config),
+        );
+
+        \Illuminate\Database\Connection::resolverFor(
+            'mariadb',
+            fn($pdo, $db, $prefix, $config) => new \Spawn\Laravel\Database\AsyncMariaDbConnection($pdo, $db, $prefix, $config),
+        );
+
+        \Illuminate\Database\Connection::resolverFor(
+            'pgsql',
+            fn($pdo, $db, $prefix, $config) => new \Spawn\Laravel\Database\AsyncPgsqlConnection($pdo, $db, $prefix, $config),
+        );
+
+        \Illuminate\Database\Connection::resolverFor(
+            'sqlite',
+            fn($pdo, $db, $prefix, $config) => new \Spawn\Laravel\Database\AsyncSqliteConnection($pdo, $db, $prefix, $config),
+        );
+
+        \Illuminate\Database\Connection::resolverFor(
+            'sqlsrv',
+            fn($pdo, $db, $prefix, $config) => new \Spawn\Laravel\Database\AsyncSqlServerConnection($pdo, $db, $prefix, $config),
+        );
+    }
+
     private function registerSessionAdapter(): void
     {
         // Replace the database session handler with an async-safe version that uses
@@ -159,9 +202,46 @@ class AsyncServiceProvider extends ServiceProvider
         }, prepend: true);
     }
 
+    private function registerRouterAdapter(): void
+    {
+        $this->app->singleton('router', function ($app) {
+            return new \Spawn\Laravel\Routing\AsyncRouter($app['events'], $app);
+        });
+    }
+
+    private function registerViewAdapter(): void
+    {
+        // Replace the stock View Factory with our async-safe version.
+        // ViewServiceProvider is never deferred, so a simple singleton() rebinding
+        // works — AsyncServiceProvider always registers after ViewServiceProvider
+        // in the provider list, so we overwrite cleanly.
+        $this->app->singleton('view', function ($app) {
+            $factory = new \Spawn\Laravel\View\AsyncViewFactory(
+                $app['view.engine.resolver'],
+                $app['view.finder'],
+                $app['events'],
+            );
+            $factory->setContainer($app);
+            $factory->share('app', $app);
+
+            return $factory;
+        });
+    }
+
     private function registerTranslatorAdapter(): void
     {
-        $this->app->singleton('translator', function ($app) {
+        // TranslationServiceProvider is a deferred provider. The naive fix of
+        // calling loadDeferredProvider() + singleton() only works when the deferred
+        // map is already populated — but ProviderRepository registers eager providers
+        // BEFORE calling addDeferredServices(), so the deferred map is empty during
+        // our register() and loadDeferredProvider() silently does nothing. Later,
+        // addDeferredServices() fills the map, and the first make('translator') call
+        // triggers the deferred load which overwrites our singleton().
+        //
+        // Solution: use extend() instead of singleton(). Extenders are stored in a
+        // separate array from bindings — they survive any singleton() rebinding by
+        // the deferred provider and wrap whatever factory it registers.
+        $this->app->extend('translator', function ($translator, $app) {
             $loader = $app['translation.loader'];
             $locale = $app->getLocale();
 

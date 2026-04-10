@@ -23,4 +23,5 @@ enum ScopedService: string
     case AUTH        = 'auth';
     case AUTH_DRIVER = 'auth.driver';
     case COOKIE      = 'cookie';
+    case VIEW      = 'view';
 }

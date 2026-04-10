@@ -68,6 +68,10 @@ class DevServer implements ServerInterface
             $events->bootCompleted();
         }
 
+        if (($router = $this->app->make('router')) instanceof \Spawn\Laravel\Routing\AsyncRouter) {
+            $router->bootCompleted();
+        }
+
         if (class_exists(\Laravel\Telescope\Telescope::class) && method_exists(\Laravel\Telescope\Telescope::class, 'enableAsyncRecording')) {
             \Laravel\Telescope\Telescope::enableAsyncRecording();
         }

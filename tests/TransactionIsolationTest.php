@@ -4,23 +4,24 @@ namespace Spawn\Laravel\Tests;
 
 use Illuminate\Database\Connection;
 use Illuminate\Database\MySqlConnection;
-use Spawn\Laravel\Database\CoroutineTransactions;
+use Spawn\Laravel\Database\AsyncMySqlConnection;
 use function Async\delay;
-
-/**
- * Connection subclass that uses the trait.
- * In real usage, this would be applied to MySqlConnection, etc.
- */
-class AsyncMySqlConnection extends MySqlConnection
-{
-    use CoroutineTransactions;
-}
 
 class TransactionIsolationTest extends AsyncTestCase
 {
+    protected function tearDown(): void
+    {
+        // Reset Connection::resolverFor() entries set by registerDatabaseAdapter()
+        // so they don't bleed into other test classes.
+        (function () {
+            static::$resolvers = [];
+        })->bindTo(null, Connection::class)();
+
+        parent::tearDown();
+    }
+
     private function makeMockConnection(string $class): Connection
     {
-        // Create a mock PDO that tracks BEGIN/SAVEPOINT calls
         $pdo = new class extends \PDO {
             public array $log = [];
 
@@ -59,12 +60,10 @@ class TransactionIsolationTest extends AsyncTestCase
             }
         };
 
-        $connection = new $class($pdo, 'test');
-
-        return $connection;
+        return new $class($pdo, 'test');
     }
 
-    // ── Stock Connection: prove the bug ──
+    // ── Stock Connection: prove the bug ──────────────────────────────────────
 
     public function test_stock_connection_transaction_counter_leaks(): void
     {
@@ -80,21 +79,19 @@ class TransactionIsolationTest extends AsyncTestCase
             },
             'b' => function () use ($conn) {
                 delay(50);
-                // B begins — but counter is already 1 from A
                 $levelBefore = $conn->transactionLevel();
                 $conn->beginTransaction();
-                $levelAfter = $conn->transactionLevel();
+                $levelAfter  = $conn->transactionLevel();
                 $conn->commit();
                 return ['before' => $levelBefore, 'after' => $levelAfter];
             },
         ]);
 
-        // B should see counter=0 before its begin, but sees 1 (leaked from A)
         $this->assertEquals(1, $results['b']['before'],
-            'BUG: B sees A\'s transaction counter — should be 0 but is 1');
+            'BUG confirmed: B sees A\'s transaction counter — should be 0 but is 1');
     }
 
-    // ── AsyncConnection: prove the fix ──
+    // ── AsyncMySqlConnection: counter isolated per coroutine ─────────────────
 
     public function test_async_connection_transaction_counter_isolated(): void
     {
@@ -107,15 +104,13 @@ class TransactionIsolationTest extends AsyncTestCase
                 $conn->beginTransaction();
                 $this->assertEquals(1, $conn->transactionLevel());
                 delay(200);
-                // Still 1, not affected by B
-                $level = $conn->transactionLevel();
+                $level = $conn->transactionLevel(); // still 1, not affected by B
                 $conn->commit();
                 return $level;
             },
             'b' => function () use ($conn) {
                 delay(50);
-                // B must see 0, not A's 1
-                $levelBefore = $conn->transactionLevel();
+                $levelBefore = $conn->transactionLevel(); // must be 0, not A's 1
                 $conn->beginTransaction();
                 $levelAfter = $conn->transactionLevel();
                 $conn->commit();
@@ -124,8 +119,8 @@ class TransactionIsolationTest extends AsyncTestCase
         ]);
 
         $this->assertEquals(1, $results['a'], 'A sees its own counter = 1');
-        $this->assertEquals(0, $results['b']['before'], 'B sees 0 before begin');
-        $this->assertEquals(1, $results['b']['after'], 'B sees 1 after begin');
+        $this->assertEquals(0, $results['b']['before'], 'B sees 0 before begin (no leak from A)');
+        $this->assertEquals(1, $results['b']['after'], 'B sees 1 after own begin');
     }
 
     public function test_async_connection_nested_transactions_isolated(): void
@@ -135,17 +130,18 @@ class TransactionIsolationTest extends AsyncTestCase
 
         $results = $this->runParallel([
             'a' => function () use ($conn) {
-                $conn->beginTransaction();       // level 1 — BEGIN
-                $conn->beginTransaction();       // level 2 — SAVEPOINT
+                $conn->beginTransaction();   // level 1 — BEGIN
+                $conn->beginTransaction();   // level 2 — SAVEPOINT
                 delay(200);
                 $level = $conn->transactionLevel();
-                $conn->rollBack();               // level 1
-                $conn->rollBack();               // level 0
+                $conn->rollBack();           // level 1
+                $conn->rollBack();           // level 0
                 return $level;
             },
             'b' => function () use ($conn) {
                 delay(50);
-                $conn->beginTransaction();       // should be level 1 — BEGIN, not SAVEPOINT
+                // B must start a real BEGIN, not SAVEPOINT
+                $conn->beginTransaction();
                 $level = $conn->transactionLevel();
                 $conn->commit();
                 return $level;
@@ -153,6 +149,51 @@ class TransactionIsolationTest extends AsyncTestCase
         ]);
 
         $this->assertEquals(2, $results['a'], 'A has nested transaction level 2');
-        $this->assertEquals(1, $results['b'], 'B has own transaction level 1');
+        $this->assertEquals(1, $results['b'], 'B has own transaction level 1 (not nested into A)');
+    }
+
+    // ── AsyncMySqlConnection in async app mode (no bootCompleted) ────────────
+
+    /**
+     * In production the connection detects async mode via AsyncApplication::isAsyncModeEnabled()
+     * without needing an explicit bootCompleted() call.
+     */
+    public function test_async_connection_detects_app_async_mode(): void
+    {
+        $app = new \Spawn\Laravel\Foundation\AsyncApplication(sys_get_temp_dir());
+        $app->instance('config', new \Illuminate\Config\Repository([
+            'async' => ['scoped_services' => [], 'db_pool' => ['enabled' => false]],
+        ]));
+        $app->enableAsyncMode();
+
+        // bind app into the container so app() helper finds it
+        \Illuminate\Container\Container::setInstance($app);
+
+        $conn = $this->makeMockConnection(AsyncMySqlConnection::class);
+        // Note: no bootCompleted() — relies on AsyncApplication::isAsyncModeEnabled()
+
+        $results = $this->runParallel([
+            'a' => function () use ($conn) {
+                $conn->beginTransaction();
+                delay(200);
+                $level = $conn->transactionLevel();
+                $conn->commit();
+                return $level;
+            },
+            'b' => function () use ($conn) {
+                delay(50);
+                $before = $conn->transactionLevel();
+                $conn->beginTransaction();
+                $after  = $conn->transactionLevel();
+                $conn->commit();
+                return ['before' => $before, 'after' => $after];
+            },
+        ]);
+
+        $this->assertEquals(1, $results['a']);
+        $this->assertEquals(0, $results['b']['before'], 'App async mode detected — no counter leak');
+        $this->assertEquals(1, $results['b']['after']);
+
+        \Illuminate\Container\Container::setInstance(null);
     }
 }

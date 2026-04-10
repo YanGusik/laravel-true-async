@@ -2,6 +2,8 @@
 
 namespace Spawn\Laravel\Database;
 
+use Spawn\Laravel\Foundation\AsyncApplication;
+
 use function Async\coroutine_context;
 
 /**
@@ -19,6 +21,10 @@ trait CoroutineTransactions
 {
     private const CTX_TRANSACTIONS = 'db.transactions';
 
+    /**
+     * Forced async mode — used in tests when no AsyncApplication is available.
+     * In production, async mode is detected via AsyncApplication::isAsyncModeEnabled().
+     */
     private bool $asyncTransactions = false;
 
     public function bootCompleted(): void
@@ -26,9 +32,20 @@ trait CoroutineTransactions
         $this->asyncTransactions = true;
     }
 
-    public function transactionLevel()
+    private function isAsyncMode(): bool
     {
         if ($this->asyncTransactions) {
+            return true;
+        }
+
+        $app = app();
+
+        return $app instanceof AsyncApplication && $app->isAsyncModeEnabled();
+    }
+
+    public function transactionLevel()
+    {
+        if ($this->isAsyncMode()) {
             return coroutine_context()->find(self::CTX_TRANSACTIONS) ?? 0;
         }
 
@@ -37,7 +54,7 @@ trait CoroutineTransactions
 
     private function setTransactionLevel(int $level): void
     {
-        if ($this->asyncTransactions) {
+        if ($this->isAsyncMode()) {
             $ctx = coroutine_context();
             if ($ctx->find(self::CTX_TRANSACTIONS) === null) {
                 $ctx->set(self::CTX_TRANSACTIONS, $level);

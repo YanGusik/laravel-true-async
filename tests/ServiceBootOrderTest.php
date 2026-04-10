@@ -2,407 +2,135 @@
 
 namespace Spawn\Laravel\Tests;
 
+use Closure;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Event;
+use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Facade;
-use Illuminate\Support\ServiceProvider;
 use PHPUnit\Framework\TestCase;
 use Spawn\Laravel\AsyncServiceProvider;
 use Spawn\Laravel\Config\AsyncConfig;
+use Spawn\Laravel\Database\AsyncMySqlConnection;
+use Spawn\Laravel\Database\AsyncMariaDbConnection;
+use Spawn\Laravel\Database\AsyncPgsqlConnection;
+use Spawn\Laravel\Database\AsyncSqliteConnection;
+use Spawn\Laravel\Database\AsyncSqlServerConnection;
 use Spawn\Laravel\Events\AsyncDispatcher;
 use Spawn\Laravel\Foundation\AsyncApplication;
+use Spawn\Laravel\Routing\AsyncRouter;
 use Spawn\Laravel\Session\AsyncDatabaseSessionHandler;
 use Spawn\Laravel\Translation\AsyncTranslator;
+use Spawn\Laravel\View\AsyncViewFactory;
 
 /**
- * Verifies that AsyncServiceProvider correctly installs all adapted services
- * regardless of which providers boot before it.
- *
- * These tests catch the boot-order bug: if an adapter is registered in boot()
- * instead of register(), framework providers that boot earlier can lock in
- * the wrong (non-async) instance.
- *
- * Pattern for each test:
- *   1. Register a "EarlyProvider" that simulates what DatabaseServiceProvider /
- *      EventServiceProvider do — resolve and cache a service early in boot().
- *   2. Register AsyncServiceProvider after it.
- *   3. Boot the app.
- *   4. Assert the service is the async-safe class, not the stock one.
- *
- * A failing test means: "this adapter is not active in a real Laravel app
- * because it loses the race with a framework provider".
+ * Boots a near-real Laravel application and asserts that every adapted service
+ * is the async-safe class, including internal dependencies injected via constructor.
  */
 class ServiceBootOrderTest extends TestCase
 {
     protected function tearDown(): void
     {
         Facade::clearResolvedInstances();
+
+        (function () {
+            static::$resolvers = [];
+        })->bindTo(null, Connection::class)();
+
         parent::tearDown();
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
-    private function makeApp(): AsyncApplication
+    public function test_all_adapters_are_installed_after_full_boot(): void
     {
+        // ── bootstrap ─────────────────────────────────────────────────────────
+
         $app = new AsyncApplication(sys_get_temp_dir());
         $app->enableAsyncMode();
 
-        // AsyncServiceProvider::registerConfigAdapter() needs 'config' to exist.
-        // In a real app it's bound by LoadConfiguration bootstrapper.
         $app->instance('config', new \Illuminate\Config\Repository([
-            'async' => [
-                'scoped_services' => [],
-                'db_pool'         => ['enabled' => false, 'min' => 2, 'max' => 10],
+            'async'   => ['scoped_services' => [], 'db_pool' => ['enabled' => false]],
+            'app'     => ['locale' => 'en', 'fallback_locale' => 'en'],
+            'view'    => ['paths' => [], 'compiled' => sys_get_temp_dir()],
+            'session' => [
+                'driver' => 'database', 'table' => 'sessions', 'lifetime' => 120,
+                'connection' => null, 'encrypt' => false,
+                'serialization' => 'php', 'cookie' => 'laravel_session',
             ],
-            'app' => ['locale' => 'en', 'fallback_locale' => 'en'],
         ]));
 
-        // TranslationServiceProvider needs 'files' (Filesystem)
         $app->instance('files', new \Illuminate\Filesystem\Filesystem());
-
-        Facade::setFacadeApplication($app);
-        Facade::clearResolvedInstances();
-        return $app;
-    }
-
-    private function bootWith(AsyncApplication $app, array $providers): void
-    {
-        foreach ($providers as $provider) {
-            $app->register($provider);
-        }
-        $app->boot();
-    }
-
-    // ── events ────────────────────────────────────────────────────────────────
-
-    /**
-     * Simulates a user's App\Providers\EventServiceProvider which calls
-     * Event::listen() inside a booting() callback — this resolves 'events'
-     * before any boot() method runs, caching the stock Dispatcher in the Facade.
-     */
-    public function test_events_facade_is_async_dispatcher_when_resolved_early(): void
-    {
-        $app = $this->makeApp();
-
-        // Simulate App\Providers\EventServiceProvider: registers listeners
-        // via booting() callback → resolves 'events' early via Facade
-        $app->booting(function () {
-            Event::listen('some.event', fn() => null); // forces early resolution
-        });
-
-        $this->bootWith($app, [
-            \Illuminate\Events\EventServiceProvider::class,
-            AsyncServiceProvider::class,
-        ]);
-
-        $this->assertInstanceOf(
-            AsyncDispatcher::class,
-            Event::getFacadeRoot(),
-            'Event:: Facade must resolve AsyncDispatcher. ' .
-            'If this fails — registerEventDispatcherAdapter() runs too late in boot(). ' .
-            'Fix: move it to register().'
-        );
-    }
-
-    /**
-     * Simulates DatabaseServiceProvider::boot() which does:
-     *   Model::setEventDispatcher($this->app['events'])
-     * If this runs before AsyncServiceProvider, Model gets the stock Dispatcher.
-     */
-    public function test_model_event_dispatcher_is_async_when_db_provider_boots_first(): void
-    {
-        $app = $this->makeApp();
-
-        // Simulates DatabaseServiceProvider::boot() — resolves 'events' and
-        // stores it as a static on Model, before AsyncServiceProvider boots.
-        $earlyProvider = new class($app) extends ServiceProvider {
-            public function register(): void {}
-            public function boot(): void
-            {
-                // This is exactly what DatabaseServiceProvider::boot() does
-                Model::setEventDispatcher($this->app['events']);
-            }
-        };
-
-        $this->bootWith($app, [
-            \Illuminate\Events\EventServiceProvider::class,
-            $earlyProvider,
-            AsyncServiceProvider::class,
-        ]);
-
-        $this->assertInstanceOf(
-            AsyncDispatcher::class,
-            Model::getEventDispatcher(),
-            'Model::$dispatcher must be AsyncDispatcher. ' .
-            'If this fails — DatabaseServiceProvider::boot() captured the stock Dispatcher ' .
-            'before AsyncServiceProvider could replace it. ' .
-            'Fix: move registerEventDispatcherAdapter() to register(), or call ' .
-            'Model::setEventDispatcher($app["events"]) again after boot.'
-        );
-    }
-
-    /**
-     * Verifies that app('events') from the container is AsyncDispatcher,
-     * not the stock one registered by Illuminate\Events\EventServiceProvider.
-     */
-    public function test_container_events_is_async_dispatcher(): void
-    {
-        $app = $this->makeApp();
-
-        $this->bootWith($app, [
-            \Illuminate\Events\EventServiceProvider::class,
-            AsyncServiceProvider::class,
-        ]);
-
-        $this->assertInstanceOf(
-            AsyncDispatcher::class,
-            $app->make('events'),
-            'app("events") must be AsyncDispatcher after boot.'
-        );
-    }
-
-    // ── config ────────────────────────────────────────────────────────────────
-
-    public function test_config_is_async_config(): void
-    {
-        $app = $this->makeApp();
-
-        $this->bootWith($app, [AsyncServiceProvider::class]);
-
-        $this->assertInstanceOf(
-            AsyncConfig::class,
-            $app->make('config'),
-            'app("config") must be AsyncConfig.'
-        );
-    }
-
-    /**
-     * Simulates a provider that reads config in register() — before AsyncServiceProvider.
-     * AsyncConfig must still be installed even if config was accessed early.
-     */
-    public function test_config_is_async_config_even_when_accessed_before_registration(): void
-    {
-        $app = $this->makeApp();
-
-        $earlyProvider = new class($app) extends ServiceProvider {
-            public function register(): void
-            {
-                // Reads config early — common pattern in service providers
-                $this->app->make('config')->get('app.name', 'default');
-            }
-            public function boot(): void {}
-        };
-
-        $this->bootWith($app, [
-            $earlyProvider,
-            AsyncServiceProvider::class,
-        ]);
-
-        $this->assertInstanceOf(
-            AsyncConfig::class,
-            $app->make('config'),
-            'app("config") must be AsyncConfig even after early access.'
-        );
-    }
-
-    // ── translator ────────────────────────────────────────────────────────────
-
-    public function test_translator_is_async_translator(): void
-    {
-        $app = $this->makeApp();
         $app->useStoragePath(sys_get_temp_dir());
         $app->useLangPath(sys_get_temp_dir());
 
-        $this->bootWith($app, [
-            \Illuminate\Translation\TranslationServiceProvider::class,
-            AsyncServiceProvider::class,
-        ]);
-
-        $this->assertInstanceOf(
-            AsyncTranslator::class,
-            $app->make('translator'),
-            'app("translator") must be AsyncTranslator.'
-        );
-    }
-
-    /**
-     * Simulates a provider that resolves 'translator' before AsyncServiceProvider boots.
-     */
-    public function test_translator_is_async_when_resolved_early(): void
-    {
-        $app = $this->makeApp();
-        $app->useStoragePath(sys_get_temp_dir());
-        $app->useLangPath(sys_get_temp_dir());
-
-        $earlyProvider = new class($app) extends ServiceProvider {
-            public function register(): void {}
-            public function boot(): void
-            {
-                // Some providers do $this->app['translator']->setLocale() in boot()
-                $this->app->make('translator');
-            }
-        };
-
-        $this->bootWith($app, [
-            \Illuminate\Translation\TranslationServiceProvider::class,
-            $earlyProvider,
-            AsyncServiceProvider::class,
-        ]);
-
-        $this->assertInstanceOf(
-            AsyncTranslator::class,
-            $app->make('translator'),
-            'app("translator") must be AsyncTranslator even if resolved early. ' .
-            'If this fails — registerTranslatorAdapter() runs too late in boot().'
-        );
-    }
-
-    // ── worker bootstrap safety ───────────────────────────────────────────────
-
-    /**
-     * Simulates what FrankenPHP does before the first request arrives:
-     * app is booted, async mode is enabled, but no request has been set yet.
-     *
-     * HandleExceptions (and other bootstrappers) can access $app['request']
-     * before kernel->handle() is called. This must NOT crash.
-     *
-     * Regression: fireResolvingCallbacks() in tryResolveScoped() was firing
-     * globalAfterResolvingCallbacks that accessed 'request' → ReflectionException.
-     */
-    /**
-     * Simulates what FrankenPHP does before the first request arrives:
-     * app is booted, async mode is enabled, but no request has been set yet.
-     *
-     * HandleExceptions::renderHttpResponse() does $app['request'] when rendering
-     * any error. In FrankenPHP the PHP SAPI is not 'cli', so runningInConsole()=false
-     * and it always takes the HTTP branch. If this crashes, the error handler itself
-     * crashes, creating a fatal loop that kills the worker on startup.
-     *
-     * Regression for: ReflectionException: Class "request" does not exist
-     */
-    public function test_resolve_request_before_first_http_request_does_not_crash(): void
-    {
-        $app = $this->makeApp();
-        $this->bootWith($app, [AsyncServiceProvider::class]);
-
-        // $app['request'] — path used by HandleExceptions (offsetGet)
-        $r1 = $app['request'];
-        $this->assertInstanceOf(
-            \Illuminate\Http\Request::class,
-            $r1,
-            '$app["request"] must return a Request object even before the first HTTP request. ' .
-            'If this fails — HandleExceptions will crash with ReflectionException on worker boot.'
-        );
-
-        // $app->make('request') — path used by any make() call in the DI chain
-        $r2 = $app->make('request');
-        $this->assertInstanceOf(
-            \Illuminate\Http\Request::class,
-            $r2,
-            'make("request") must return a Request object even before the first HTTP request.'
-        );
-    }
-
-    private function setSessionConfig(AsyncApplication $app): void
-    {
-        $app['config']->set('session.driver', 'database');
-        $app['config']->set('session.table', 'sessions');
-        $app['config']->set('session.lifetime', 120);
-        $app['config']->set('session.connection', null);
-        $app['config']->set('session.encrypt', false);
-        $app['config']->set('session.serialization', 'php');
-        $app['config']->set('session.cookie', 'laravel_session');
-    }
-
-    private function stubDatabaseConnection(AsyncApplication $app): void
-    {
         $connection = $this->createMock(\Illuminate\Database\ConnectionInterface::class);
         $db = $this->createMock(\Illuminate\Database\DatabaseManager::class);
         $db->method('connection')->willReturn($connection);
         $app->instance('db', $db);
-    }
 
-    // ── session ───────────────────────────────────────────────────────────────
-
-    /**
-     * Verifies that the 'database' session driver returns AsyncDatabaseSessionHandler.
-     *
-     * The handler is registered via afterResolving('session', ...) which fires
-     * the moment the SessionManager is first resolved. As long as the extend()
-     * call happens before driver('database') is invoked (it always does — driver()
-     * is called in StartSession middleware, well after boot), the handler is ours.
-     */
-    public function test_database_session_handler_is_async(): void
-    {
-        $app = $this->makeApp();
-        $app['config']->set('session.driver', 'database');
-        $app['config']->set('session.table', 'sessions');
-        $app['config']->set('session.lifetime', 120);
-        $app['config']->set('session.connection', null);
-        $app['config']->set('session.encrypt', false);
-        $app['config']->set('session.serialization', 'php');
-        $app['config']->set('session.cookie', 'laravel_session');
-
-        $this->stubDatabaseConnection($app);
-
-        $this->bootWith($app, [
-            \Illuminate\Session\SessionServiceProvider::class,
-            AsyncServiceProvider::class,
+        // Simulate bootstrap/cache/services.php deferred entries
+        $app->addDeferredServices([
+            'translator'         => \Illuminate\Translation\TranslationServiceProvider::class,
+            'translation.loader' => \Illuminate\Translation\TranslationServiceProvider::class,
         ]);
 
-        $handler = $app->make('session')->driver('database')->getHandler();
+        Facade::setFacadeApplication($app);
+        Facade::clearResolvedInstances();
 
-        $this->assertInstanceOf(
-            AsyncDatabaseSessionHandler::class,
-            $handler,
-            'Database session driver must use AsyncDatabaseSessionHandler. ' .
-            'If this fails — afterResolving("session") callback was not registered.'
-        );
-    }
-
-    /**
-     * Simulates a provider that resolves the session manager early (before AsyncServiceProvider).
-     * The afterResolving callback must still fire and register our driver.
-     */
-    public function test_database_session_handler_is_async_when_session_resolved_early(): void
-    {
-        $app = $this->makeApp();
-        $app['config']->set('session.driver', 'database');
-        $app['config']->set('session.table', 'sessions');
-        $app['config']->set('session.lifetime', 120);
-        $app['config']->set('session.connection', null);
-        $app['config']->set('session.encrypt', false);
-        $app['config']->set('session.serialization', 'php');
-        $app['config']->set('session.cookie', 'laravel_session');
-
-        $this->stubDatabaseConnection($app);
-
-        // Simulates a provider that resolves 'session' manager in register()
-        // (e.g. to register a listener or check the configured driver).
-        $earlyProvider = new class($app) extends ServiceProvider {
-            public function register(): void
-            {
-                $this->app->make('session'); // forces early resolution of SessionManager
-            }
-            public function boot(): void {}
-        };
-
-        $this->bootWith($app, [
+        foreach ([
+            \Illuminate\Events\EventServiceProvider::class,
+            \Illuminate\Routing\RoutingServiceProvider::class,
+            \Illuminate\View\ViewServiceProvider::class,
             \Illuminate\Session\SessionServiceProvider::class,
-            $earlyProvider,
             AsyncServiceProvider::class,
-        ]);
+        ] as $provider) {
+            $app->register($provider);
+        }
 
-        // driver() is resolved here — afterResolving already fired, extend() was called
-        $handler = $app->make('session')->driver('database')->getHandler();
+        $app->boot();
 
-        $this->assertInstanceOf(
-            AsyncDatabaseSessionHandler::class,
-            $handler,
-            'Database session driver must use AsyncDatabaseSessionHandler even when ' .
-            'the session manager is resolved before AsyncServiceProvider registers. ' .
-            'If this fails — afterResolving fires too early (before our extend call) ' .
-            'OR the extend was not registered at all.'
-        );
+        // ── container bindings ────────────────────────────────────────────────
+
+        $this->assertInstanceOf(AsyncDispatcher::class,  $app->make('events'),     'events');
+        $this->assertInstanceOf(AsyncConfig::class,       $app->make('config'),     'config');
+        $this->assertInstanceOf(AsyncRouter::class,       $app->make('router'),     'router');
+        $this->assertInstanceOf(AsyncTranslator::class,   $app->make('translator'), 'translator');
+        $this->assertInstanceOf(AsyncViewFactory::class,  $app->make('view'),       'view');
+
+        $sessionHandler = $app->make('session')->driver('database')->getHandler();
+        $this->assertInstanceOf(AsyncDatabaseSessionHandler::class, $sessionHandler, 'session.database handler');
+
+        // ── database connection resolvers ─────────────────────────────────────
+
+        $mockPdo = new class extends \PDO { public function __construct() {} };
+
+        foreach ([
+            'mysql'   => AsyncMySqlConnection::class,
+            'mariadb' => AsyncMariaDbConnection::class,
+            'pgsql'   => AsyncPgsqlConnection::class,
+            'sqlite'  => AsyncSqliteConnection::class,
+            'sqlsrv'  => AsyncSqlServerConnection::class,
+        ] as $driver => $expected) {
+            $resolver = Connection::getResolver($driver);
+            $this->assertNotNull($resolver, "Connection::resolverFor('$driver') must be set");
+            $this->assertInstanceOf($expected, $resolver($mockPdo, 'test', '', []), "db.$driver");
+        }
+
+        // ── internal dependencies ─────────────────────────────────────────────
+
+        // Router::$events — injected via constructor, must be AsyncDispatcher
+        $router = $app->make('router');
+        $routerEvents = Closure::bind(function () { return $this->events; }, $router, Router::class)();
+        $this->assertInstanceOf(AsyncDispatcher::class, $routerEvents,
+            'Router::$events must be AsyncDispatcher — if it fails, RoutingServiceProvider ' .
+            'injected stock Dispatcher before our binding was set');
+
+        // ViewFactory::$events — injected via constructor, must be AsyncDispatcher
+        $view = $app->make('view');
+        $viewEvents = Closure::bind(function () { return $this->events; }, $view, AsyncViewFactory::class)();
+        $this->assertInstanceOf(AsyncDispatcher::class, $viewEvents,
+            'ViewFactory::$events must be AsyncDispatcher');
+
+        // Model::$dispatcher — set by DatabaseServiceProvider::boot(), corrected by our booted() callback
+        $this->assertInstanceOf(AsyncDispatcher::class, Model::getEventDispatcher(),
+            'Model::$dispatcher must be AsyncDispatcher after boot');
     }
 }

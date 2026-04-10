@@ -38,6 +38,11 @@ class AsyncApplication extends Application
      */
     private array $scopedServiceCache = [];
 
+    public function isAsyncModeEnabled(): bool
+    {
+        return $this->asyncMode;
+    }
+
     public function enableAsyncMode(): void
     {
         $this->asyncMode = true;
