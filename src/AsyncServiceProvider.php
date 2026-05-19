@@ -4,7 +4,8 @@ namespace Spawn\Laravel;
 
 use Illuminate\Support\ServiceProvider;
 use Spawn\Laravel\Console\FrankenServeCommand;
-use Spawn\Laravel\Console\ServeCommand;
+use Spawn\Laravel\Console\DevServeCommand;
+use Spawn\Laravel\Console\TrueAsyncServeCommand;
 
 class AsyncServiceProvider extends ServiceProvider
 {
@@ -26,8 +27,9 @@ class AsyncServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__ . '/../config/async.php', 'async');
 
         $this->commands([
-            ServeCommand::class,
+            DevServeCommand::class,
             FrankenServeCommand::class,
+            TrueAsyncServeCommand::class,
         ]);
     }
 
